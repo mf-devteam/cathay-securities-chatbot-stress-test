@@ -1,5 +1,5 @@
 // 新阿發 /api/chat/ask 輕量試跑（不是壓力測試）
-// 規格與限制見 ../Claude_Handover.md、調查結果見 INVESTIGATION.md
+// 規格與限制見 ../docs/tasks/2026-10-07-k6-poc-handover.md、調查結果見 ../docs/investigation.md
 import http from 'k6/http';
 import { check } from 'k6';
 import { Counter } from 'k6/metrics';

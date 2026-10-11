@@ -1,6 +1,6 @@
 # 新阿發 /ask k6 輕量試跑
 
-對聊天 API `POST /api/chat/ask` 打極輕量流量（每 10 秒 1 次、3 分鐘、約 18 次），用來驗證 k6 流程與 HTML 報告格式。**這不是壓力測試。** 硬性限制見 [../Claude_Handover.md](../Claude_Handover.md)，API 調查結果見 [INVESTIGATION.md](INVESTIGATION.md)。
+對聊天 API `POST /api/chat/ask` 打極輕量流量（每 10 秒 1 次、3 分鐘、約 18 次），用來驗證 k6 流程與 HTML 報告格式。**這不是壓力測試。** 硬性限制見 [docs/tasks/2026-10-07-k6-poc-handover.md](../docs/tasks/2026-10-07-k6-poc-handover.md)，API 調查結果見 [docs/investigation.md](../docs/investigation.md)。
 
 ## 安裝
 
@@ -60,4 +60,4 @@ k6 run --out json=results/raw.json script.js
 
 ## 關於 reCAPTCHA
 
-BFF 會對每次 `/ask` 驗證 reCAPTCHA Enterprise token。token 只能由瀏覽器產生、2 分鐘內有效且只能驗證一次，k6 無法以正常方式取得。不關閉 reCAPTCHA 的話，所有請求都會在 BFF 被擋下（403 E1010），不會到達 AI；錯誤率超過門檻，腳本會在第一次評估時自動中止。詳見 [INVESTIGATION.md](INVESTIGATION.md) 第 4 節。
+BFF 會對每次 `/ask` 驗證 reCAPTCHA Enterprise token。token 只能由瀏覽器產生、2 分鐘內有效且只能驗證一次，k6 無法以正常方式取得。不關閉 reCAPTCHA 的話，所有請求都會在 BFF 被擋下（403 E1010），不會到達 AI；錯誤率超過門檻，腳本會在第一次評估時自動中止。詳見 [docs/investigation.md](../docs/investigation.md) 第 4 節。
