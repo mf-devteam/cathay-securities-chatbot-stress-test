@@ -27,10 +27,10 @@ gs://<bucket>/<prefix>/<RUN_ID>/
 
 | 名稱 | 必填 | 預設 | 說明 |
 |---|---|---|---|
-| RUN_ID | 是 | — | 本輪壓測代號，例如 `20261020-baseline` |
+| RUN_ID | 否 | Cloud Run 的 execution 名稱（`CLOUD_RUN_EXECUTION`） | 本輪壓測代號，例如 `20261020-baseline`；建議每次執行時用 `--update-env-vars` 指定 |
 | OUTPUT_URI | 是 | — | `gs://<bucket>/<prefix>`；本機模擬時為資料夾路徑 |
 | UPLOAD_INTERVAL_S | 否 | 300 | 上傳間隔（秒） |
-| K6_SCRIPT | 否 | `/app/k6/script.js` | k6 腳本 |
+| K6_SCRIPT | 否 | `/app/k6/mock/script.js` | k6 腳本（映像檔內含整個 `k6/` 目錄） |
 | WORK_DIR | 否 | `/tmp/k6-out` | 本機暫存目錄 |
 | THRESHOLD_FAIL_EXIT_ZERO | 否 | true | exit 99（門檻未通過）是否改回 0 |
 | BASE_URL、MIX、TIME_SCALE… | 依腳本 | — | 直接傳給 k6 腳本（`__ENV`） |
@@ -55,11 +55,18 @@ gcloud run jobs deploy k6-runner \
   --cpu 8 --memory 32Gi \
   --service-account <runner-sa> \  # 需要對 bucket 的 storage.objects.create／delete 權限
   --network <vpc> --subnet <subnet> --vpc-egress all-traffic \  # 經 Cloud NAT 固定 IP 出去
-  --set-env-vars RUN_ID=<run-id>,OUTPUT_URI=gs://<bucket>/runs,BASE_URL=<受測入口>,...
+  --set-env-vars OUTPUT_URI=gs://<bucket>/runs,BASE_URL=<受測入口>,...
+
+# 每一輪壓測：執行一次（不需要重新部署），RUN_ID 與 task 數可以每次覆寫
+gcloud run jobs execute k6-runner --region <region> \
+  --update-env-vars RUN_ID=20261020-baseline,MIX=baseline \
+  --tasks <N>
 ```
+
+之後改用 Terraform 管理 Job 定義（見 [infra/terraform/](../infra/terraform/README.md)）；執行仍用 `gcloud run jobs execute`。
 
 ## 待確認
 
 - `grafana/k6:2.3.0` 映像檔 tag 是否存在（與本機開發版本一致）。
-- 目前映像檔放的是 mock 版腳本（只允許打本機）；正式腳本完成後要替換。
+- 目前預設腳本是 mock 版（只允許打本機）；正式腳本完成後改 `K6_SCRIPT` 預設值。
 - 每個 task 能承載的 VU 數與記憶體，要在 Smoke 時量測（見 [docs/measurements.md](../docs/measurements.md)）。

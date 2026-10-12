@@ -3,7 +3,13 @@
 __pycache__/
 *.pyc
 # k6 執行結果（本機）
-k6-poc/results/
-k6-mock/results/
+results/
 # 本機模擬的 GCS 與暫存
 .local-gcs/
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform.tfstate.lock.info

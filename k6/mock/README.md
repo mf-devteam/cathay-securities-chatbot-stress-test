@@ -2,7 +2,7 @@
 
 依「新阿發 壓力測試規劃 v1.4」寫的 k6 腳本骨架，**只打本機的 mock server**，用來預覽 k6 Web Dashboard 和報表的樣子。所有回應與數值都是模擬的，**不代表任何真實環境**。腳本有防呆：`BASE_URL` 只接受 `127.0.0.1`／`localhost`。
 
-真實環境的試跑腳本在 [../k6-poc/](../k6-poc/)。多個 task 合併報表的完整流程見 [docs/architecture.md](../docs/architecture.md) 與 [scripts/local-sim.sh](../scripts/local-sim.sh)。
+正式腳本見 [../README.md](../README.md)。多個 task 合併報表的完整流程見 [docs/architecture.md](../../docs/architecture.md) 與 [scripts/local-sim.sh](../../scripts/local-sim.sh)。
 
 ## 對應規劃
 
@@ -40,14 +40,14 @@
 **1. 啟動 mock server（另開一個 terminal）**
 
 ```bash
-cd k6-mock
+cd k6/mock
 node mock-server.js
 ```
 
 **2a. 完整加壓曲線（約 15 分鐘，建議用這個看 dashboard）**
 
 ```bash
-cd k6-mock
+cd k6/mock
 mkdir -p results
 K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_OPEN=true \
 K6_WEB_DASHBOARD_EXPORT=results/report.html \
@@ -57,7 +57,7 @@ k6 run script.js
 執行期間瀏覽器會自動開啟即時 dashboard（http://127.0.0.1:5665，每 10 秒更新），結束後報告存成 `results/report.html`。
 
 - **前幾分鐘大多顯示 no data 是正常的：**Smoke 只有 1 倍的 1%，每分鐘不到 1 個對話，約 3 分鐘後的 Baseline 才開始有曲線。
-- **加上中文教學說明：**`python3 ../scripts/annotate-dashboard.py results/report.html`，會產出 `results/report-annotated.html`。各圖表的說明見 [docs/dashboard-guide.md](../docs/dashboard-guide.md)。
+- **加上中文教學說明：**`python3 ../../scripts/annotate-dashboard.py results/report.html`，會產出 `results/report-annotated.html`。各圖表的說明見 [docs/dashboard-guide.md](../../docs/dashboard-guide.md)。
 
 **2b. 快速版（約 2 分鐘，只確認能跑）**
 

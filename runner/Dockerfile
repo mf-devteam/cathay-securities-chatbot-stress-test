@@ -8,12 +8,12 @@ RUN apk add --no-cache bash curl ca-certificates tzdata
 COPY --from=k6 /usr/bin/k6 /usr/bin/k6
 
 WORKDIR /app
-# 目前放 mock 版腳本；正式腳本完成後改為正式腳本目錄
-COPY k6-mock/script.js /app/k6/script.js
-COPY k6-mock/data /app/k6/data
+# 整個 k6/ 目錄放進映像檔，用 K6_SCRIPT 選腳本（Terraform／gcloud 設定環境變數即可切換）
+COPY k6/ /app/k6/
 COPY runner/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh && adduser -D -u 10001 k6user
 USER k6user
 
-ENV K6_SCRIPT=/app/k6/script.js
+# 目前只有 mock 腳本（只允許打本機）；正式腳本完成後改為正式腳本路徑
+ENV K6_SCRIPT=/app/k6/mock/script.js
 ENTRYPOINT ["/app/entrypoint.sh"]

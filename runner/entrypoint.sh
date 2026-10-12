@@ -15,7 +15,7 @@
 #   tasks/task-000/k6-console.log  該 task 的 k6 console 輸出
 #
 # 環境變數：
-#   RUN_ID              必填，本輪壓測代號，例如 20261020-baseline
+#   RUN_ID              本輪壓測代號，例如 20261020-baseline；未設定時用 Cloud Run 的 execution 名稱
 #   OUTPUT_URI          必填，gs://<bucket>/<prefix> 或本機資料夾（模擬 GCS）
 #   K6_SCRIPT           k6 腳本路徑，預設 /app/k6/script.js
 #   UPLOAD_INTERVAL_S   上傳間隔秒數，預設 300
@@ -25,7 +25,8 @@
 #   其他 k6 腳本參數（BASE_URL、MIX、TIME_SCALE…）直接以環境變數傳入，k6 會讀到 __ENV
 set -euo pipefail
 
-: "${RUN_ID:?RUN_ID 必填}"
+RUN_ID="${RUN_ID:-${CLOUD_RUN_EXECUTION:-}}"
+: "${RUN_ID:?RUN_ID 必填（Cloud Run 上未設定時自動用 execution 名稱）}"
 : "${OUTPUT_URI:?OUTPUT_URI 必填（gs://bucket/prefix 或本機資料夾）}"
 K6_SCRIPT="${K6_SCRIPT:-/app/k6/script.js}"
 UPLOAD_INTERVAL_S="${UPLOAD_INTERVAL_S:-300}"
