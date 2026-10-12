@@ -1,0 +1,26 @@
+
+===== 新阿發壓測（mock）摘要｜MIX=baseline STAGES=full 1倍=1.18 對話/秒 時間÷15 =====
+完成對話數   : 530
+送出／成功   : 7947 ／ 7927（8.56 req/s）
+錯誤率       : 0.25%（5xx + timeout）  業務錯誤 0  HTTP 429 0
+
+類別        請求數      avg      p50      p95      p99      max   錯誤率
+faq           702   9.81s   8.56s  20.10s  27.26s  30.00s   0.71%
+business     6235   3.46s   3.07s   6.93s   9.30s  18.37s   0.16%
+init          839   9.76s   8.56s  20.98s  27.14s  30.00s   0.60%
+login         171   0.82s   0.70s   1.80s   2.16s   2.62s   0.00%
+
+門檻判定（參考值）：
+  ✗ http_req_duration{flow:business} p(95)<5000
+  ✓ http_req_duration{flow:business} p(99)<10000
+  ✓ http_req_duration{flow:business} p(99)<20000
+  ✓ errors_5xx_timeout{flow:business} rate<=0.005
+  ✗ errors_5xx_timeout{flow:faq} rate<=0.005
+  ✓ http_429 count<1
+  ✗ http_req_duration{flow:faq} p(99)<20000
+  ✓ http_req_duration{flow:faq} p(99)<40000
+  ✗ http_req_duration{flow:faq} p(95)<10000
+  ✓ errors_5xx_timeout rate<0.05
+  ✓ errors_5xx_timeout rate<=0.005
+time="2026-10-11T11:22:53+08:00" level=error msg="thresholds on metrics 'errors_5xx_timeout{flow:faq}, http_req_duration{flow:business}, http_req_duration{flow:faq}' have been crossed"
+k6 exit=99
