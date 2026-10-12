@@ -1,6 +1,7 @@
 """在 k6 Web Dashboard 匯出的 HTML 報告上加入中文教學說明（黃色說明框）。
 
-報表 Job 會對每個 task 的 dashboard 自動產生教學版；本機也可以用 scripts/annotate-dashboard.py 單獨執行。
+報表 Job 會對每個 task 的 dashboard 自動產生教學版；本機也可以單獨執行：
+    python3 report-job/annotate.py <k6 匯出的 report.html> [輸出檔，預設 <原檔名>-annotated.html]
 做法：在 </body> 前插入一段 CSS 與 JavaScript，頁面載入後依各圖表／表格的標題文字插入說明。
 k6 的資料與圖表本身不做任何修改；右上角按鈕可以隱藏或顯示說明。
 """
@@ -165,3 +166,22 @@ def task_banner(task: str, task_count: int | None) -> str:
     share = f"1/{task_count}" if task_count else "部分"
     return (f"<b>這份 dashboard 只代表壓測機 {_html.escape(task)}（約 {share} 的流量）</b>，"
             "數字不能直接當全體結果；全體數字請看合併報告。")
+
+
+def main() -> None:
+    import sys
+    from pathlib import Path
+
+    if len(sys.argv) < 2:
+        raise SystemExit(__doc__)
+    src = Path(sys.argv[1])
+    dst = Path(sys.argv[2]) if len(sys.argv) > 2 else src.with_name(src.stem + "-annotated.html")
+    page = src.read_text(encoding="utf-8")
+    if is_annotated(page):
+        raise SystemExit(f"{src} 已經加過說明")
+    dst.write_text(annotate_html(page), encoding="utf-8")
+    print(f"已輸出：{dst}")
+
+
+if __name__ == "__main__":
+    main()

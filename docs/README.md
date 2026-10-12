@@ -12,7 +12,7 @@
 | [samples/](samples/) | 量測的原始輸出與範例報告（k6 summary、合併報告 HTML、教學版 dashboard） | 所有人 |
 | [images/](images/) | 報告與 dashboard 截圖（簡報用） | Claude Desktop／PM |
 
-各工具的使用方式見各目錄的 README：[k6/](../k6/README.md)、[k6/mock/](../k6/mock/README.md)、[runner/](../runner/README.md)、[report-job/](../report-job/README.md)、[infra/terraform/](../infra/terraform/README.md)。
+各工具的使用方式見各目錄的 README：[runner/k6/](../runner/k6/README.md)、[runner/k6/mock/](../runner/k6/mock/README.md)、[runner/](../runner/README.md)、[report-job/](../report-job/README.md)、[infra/terraform/](../infra/terraform/README.md)。
 
 **外部文件（不在 repo 內）：**
 - 「新阿發 壓力測試規劃 v1.4」（簡報）

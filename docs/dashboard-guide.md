@@ -13,8 +13,8 @@ k6 內建的 Web Dashboard 有兩種用法：
 - **本機：**
 
 ```bash
-python3 scripts/annotate-dashboard.py k6/mock/results/report.html
-# → k6/mock/results/report-annotated.html
+python3 report-job/annotate.py runner/k6/mock/results/report.html
+# → runner/k6/mock/results/report-annotated.html
 ```
 
 合併報告本身也有教學輔助：頁首有「閱讀指南（三步驟）」和可展開的「名詞解釋」，每個區塊附「怎麼看」說明，右上角按鈕可以一次隱藏全部說明（列印或貼進正式報告前使用）。

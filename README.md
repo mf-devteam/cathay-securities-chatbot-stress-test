@@ -10,23 +10,24 @@
 
 ```
 .
-├── k6/                 k6 腳本（會打包進 runner 映像檔）
-│   ├── mock/           mock 版腳本 + 本機 mock server（只允許打本機）
-│   └── (正式腳本)       依 docs/api-inventory.md 盤點結果撰寫
-├── runner/             壓測機映像檔（Cloud Run Job「k6-runner」）
-├── report-job/         報表映像檔（Cloud Run Job「k6-report」）
+├── runner/             Cloud Run Job「k6-runner」（壓測機）
+│   ├── Dockerfile
+│   ├── entrypoint.sh   execution segment 分流、CSV 定時上傳 GCS
+│   └── k6/             k6 腳本
+│       ├── (正式腳本)   依 docs/api-inventory.md 盤點結果撰寫
+│       └── mock/       mock 版腳本 + 本機 mock server（只允許打本機）
+├── report-job/         Cloud Run Job「k6-report」（合併報告）
 ├── infra/terraform/    GCP 資源（Job、IAM、GCS、網路）的 IaC
-├── scripts/            本機模擬、dashboard 教學說明
+├── scripts/            本機模擬整套流程（local-sim.sh）
 └── docs/               文件
 ```
 
 | 路徑 | 內容 |
 |---|---|
-| [k6/](k6/) | k6 腳本。正式腳本依 API 盤點結果撰寫；[k6/mock/](k6/mock/) 是依規劃 v1.4 的 mock 版腳本與本機 mock server |
-| [runner/](runner/) | 壓測機（Cloud Run Jobs）的容器與啟動腳本：execution segment 分流、CSV 定時上傳 GCS |
+| [runner/](runner/) | 壓測機（Cloud Run Jobs）：容器、啟動腳本與 [k6 腳本](runner/k6/)。正式腳本依 API 盤點結果撰寫；[runner/k6/mock/](runner/k6/mock/) 是依規劃 v1.4 的 mock 版腳本與本機 mock server |
 | [report-job/](report-job/) | 壓測報表 Job（Python，Cloud Run Jobs，手動執行）：合併所有 task 的原始數據，產生單一 HTML 報告 |
 | [infra/terraform/](infra/terraform/) | Terraform：Cloud Run Jobs、service account／IAM、GCS bucket、Artifact Registry、VPC／Cloud NAT |
-| [scripts/](scripts/) | 本機模擬整套流程、在 k6 dashboard 加上教學說明 |
+| [scripts/](scripts/) | 本機模擬整套流程：mock → 多個 runner task → report-job |
 | [docs/](docs/) | 文件：環境調查、API 盤點、架構、量測紀錄、dashboard 教學、交接 |
 
 SIT 連線試跑腳本（`k6-poc/`）已移除，需要時見 git 歷史（commit 560a85b）。
@@ -37,13 +38,13 @@ SIT 連線試跑腳本（`k6-poc/`）已移除，需要時見 git 歷史（commi
 
 ```bash
 # 1. 只看 k6 dashboard：mock server + 完整逐階加壓（約 15 分鐘）
-node k6/mock/mock-server.js &
+node runner/k6/mock/mock-server.js &
 K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_OPEN=true \
-K6_WEB_DASHBOARD_EXPORT=k6/mock/results/report.html \
-  k6 run -e RESULTS_DIR=k6/mock/results k6/mock/script.js
+K6_WEB_DASHBOARD_EXPORT=runner/k6/mock/results/report.html \
+  k6 run -e RESULTS_DIR=runner/k6/mock/results runner/k6/mock/script.js
 
 # 在匯出的 dashboard 上加中文教學說明
-python3 scripts/annotate-dashboard.py k6/mock/results/report.html
+python3 report-job/annotate.py runner/k6/mock/results/report.html
 
 # 2. 模擬正式機制：3 個 task → 定時上傳（本機資料夾模擬 GCS）→ 合併報告（約 5 分鐘）
 scripts/local-sim.sh
@@ -88,6 +89,6 @@ gcloud run jobs executions cancel <execution 名稱> --region $REGION
 
 ## 安全注意事項
 
-- **mock 腳本只能打本機：** [k6/mock/script.js](k6/mock/script.js) 有防呆，`BASE_URL` 只接受 `127.0.0.1`／`localhost`。
+- **mock 腳本只能打本機：** [runner/k6/mock/script.js](runner/k6/mock/script.js) 有防呆，`BASE_URL` 只接受 `127.0.0.1`／`localhost`。
 - **對任何真實環境執行前，都要先取得負責人同意，**並遵守 [docs/tasks/2026-10-07-k6-poc-handover.md](docs/tasks/2026-10-07-k6-poc-handover.md) 的限制。
 - **不要把帳號、token、金鑰寫進檔案或 commit；**一律用環境變數。

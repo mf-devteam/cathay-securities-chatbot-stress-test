@@ -1,8 +1,0 @@
-# runner 映像檔以 repo 根目錄為 build context，排除本機產物
-**/results/
-.local-gcs/
-.git/
-docs/
-infra/
-**/__pycache__/
-**/.DS_Store

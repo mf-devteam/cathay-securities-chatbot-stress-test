@@ -1,8 +1,8 @@
 # API 盤點（寫正式 k6 腳本的依據）
 
-依「新阿發 壓力測試規劃 v1.4」的業務情境，逐一到各 repo 確認使用者操作時實際呼叫哪些 API、順序與前置條件。盤點完成的情境才寫進正式 k6 腳本（[k6/](../k6/README.md)）。
+依「新阿發 壓力測試規劃 v1.4」的業務情境，逐一到各 repo 確認使用者操作時實際呼叫哪些 API、順序與前置條件。盤點完成的情境才寫進正式 k6 腳本（[runner/k6/](../runner/k6/README.md)）。
 
-情境代號與比例與 mock 腳本（[k6/mock/script.js](../k6/mock/script.js) 的 `SCENARIOS`）一致。
+情境代號與比例與 mock 腳本（[runner/k6/mock/script.js](../runner/k6/mock/script.js) 的 `SCENARIOS`）一致。
 
 ## 狀態說明
 

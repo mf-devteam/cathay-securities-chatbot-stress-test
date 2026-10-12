@@ -2,6 +2,12 @@
 
 Cloud Run Jobs 的每個 task 執行一次 [entrypoint.sh](entrypoint.sh)，各跑 1/N 的負載，並把 k6 原生的 CSV 原始數據定時上傳到 GCS。整體機制見 [docs/architecture.md](../docs/architecture.md)。
 
+| 檔案 | 內容 |
+|---|---|
+| [Dockerfile](Dockerfile) | 映像檔（build context 為本目錄） |
+| [entrypoint.sh](entrypoint.sh) | 每個 task 的啟動腳本 |
+| [k6/](k6/README.md) | k6 腳本（正式版與 mock 版），整個目錄打包進映像檔 |
+
 ## 每個 task 做的事
 
 1. 依 `CLOUD_RUN_TASK_INDEX`／`CLOUD_RUN_TASK_COUNT`，用 k6 的 execution segment 只跑自己那一份（第 i 個 task 跑 i/N～(i+1)/N）。
@@ -44,7 +50,7 @@ gs://<bucket>/<prefix>/<RUN_ID>/
 
 ```bash
 # 在 repo 根目錄
-docker build -f runner/Dockerfile -t <region>-docker.pkg.dev/<project>/<repo>/k6-runner:<tag> .
+docker build -t <region>-docker.pkg.dev/<project>/<repo>/k6-runner:<tag> runner
 docker push <region>-docker.pkg.dev/<project>/<repo>/k6-runner:<tag>
 
 gcloud run jobs deploy k6-runner \

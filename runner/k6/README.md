@@ -1,11 +1,11 @@
 # k6 腳本
 
-整個 `k6/` 目錄會打包進壓測機映像檔（[runner/Dockerfile](../runner/Dockerfile)），用環境變數 `K6_SCRIPT` 選擇要跑的腳本。
+整個 `k6/` 目錄會打包進壓測機映像檔（[Dockerfile](../Dockerfile)），用環境變數 `K6_SCRIPT` 選擇要跑的腳本。
 
 | 路徑 | 內容 |
 |---|---|
 | [mock/](mock/) | 依規劃 v1.4 的 mock 版腳本與本機 mock server。`BASE_URL` 只接受本機 |
-| （待建立）正式腳本 | 依 [docs/api-inventory.md](../docs/api-inventory.md) 的盤點結果撰寫 |
+| （待建立）正式腳本 | 依 [docs/api-inventory.md](../../docs/api-inventory.md) 的盤點結果撰寫 |
 
 ## 正式腳本的預定結構
 
@@ -21,7 +21,7 @@ k6/
 
 ## 撰寫時要沿用的事項
 
-從 SIT 試跑與環境調查（[docs/investigation.md](../docs/investigation.md)）得到的：
+從 SIT 試跑與環境調查（[docs/investigation.md](../../docs/investigation.md)）得到的：
 
 - **`maxRedirects: 0`：** Cloud Armor 對非白名單 IP 回 302 導向維護頁，跟隨轉址會變成 HTTP 200 的 HTML，被誤判成功。
 - **只有預期的狀態碼算成功：** BFF 用 205（護欄擋下）、206（AI 無法生成）回錯誤，不能當成功。

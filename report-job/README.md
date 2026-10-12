@@ -42,7 +42,7 @@ HTML 是單一檔案，圖表為內嵌 SVG，下載後不需要網路就能開�
 - 合併報告用相對路徑連結過去：在 GCS 或本機資料夾開啟時可以直接點；單獨下載合併報告時，要連同 `tasks/` 一起下載。
 - 設定 `ANNOTATE_DASHBOARDS=false` 可以關閉。
 
-本機單獨使用同一份說明：`python3 scripts/annotate-dashboard.py <report.html>`。
+本機單獨使用同一份說明：`python3 report-job/annotate.py <report.html>`。
 
 ## 正確性
 

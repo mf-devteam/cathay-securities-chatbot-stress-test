@@ -1,0 +1,3 @@
+# build context 為 runner/，排除本機產物
+**/results/
+**/.DS_Store
