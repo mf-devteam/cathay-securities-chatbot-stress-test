@@ -14,6 +14,6 @@ COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh && adduser -D -u 10001 k6user
 USER k6user
 
-# 目前只有 mock 腳本（只允許打本機）；正式腳本完成後改為正式腳本路徑
-ENV K6_SCRIPT=/app/k6/mock/script.js
+# 正式腳本；打 lab／UAT 時 Job 定義要設定 BASE_URL 與 ALLOW_REMOTE_TARGET=true
+ENV K6_SCRIPT=/app/k6/script.js
 ENTRYPOINT ["/app/entrypoint.sh"]

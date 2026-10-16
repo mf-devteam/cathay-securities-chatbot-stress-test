@@ -1,0 +1,4 @@
+# 複製成 terraform.tfvars 後修改（*.tfvars 不進 git）
+project_id         = "cfh-de-chatbot-lab"
+region             = "asia-east1"
+notification_email = "tsc-pdev.service@microfusion.cloud"

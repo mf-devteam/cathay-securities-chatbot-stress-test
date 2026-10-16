@@ -59,7 +59,7 @@
 
 ## 報告怎麼分階段
 
-k6 腳本依執行時間替每個請求加上 `stage`（smoke、low5 … x3、recovery）和 `phase`（ramp／hold）的 tag，這些 tag 會寫進 CSV。報表 Job 直接依 tag 分組：
+k6 腳本依執行時間替每個請求加上 `stage`（`STAGE_PLAN` 的階段代號，預設 smoke、low5 … x1、recovery）和 `phase`（ramp／hold）的 tag，這些 tag 會寫進 CSV。報表 Job 直接依 tag 分組：
 
 - **各階段判定只計 `hold`（持續期間）。**爬升期間不列入判定，但仍計入整輪統計。
 - **FAQ／業務查詢依 `flow` tag 分開統計。**情境代號用 `case` tag（例如 B2、C1）。

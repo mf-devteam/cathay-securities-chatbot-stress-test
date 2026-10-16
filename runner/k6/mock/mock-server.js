@@ -4,7 +4,8 @@
 //
 // 啟動：node mock-server.js        （預設 http://127.0.0.1:8090）
 // 參數（環境變數）：
-//   MOCK_PORT           預設 8090
+//   MOCK_PORT           預設 8090（Cloud Run 上改讀 PORT）
+//   MOCK_HOST           預設 127.0.0.1；部署成 Cloud Run Service 時設 0.0.0.0
 //   MOCK_FAQ_MEAN_MS    FAQ 問答平均回應時間，預設 9570（10/7 UAT 前端實測平均）
 //   MOCK_BIZ_MEAN_MS    業務查詢平均回應時間，預設 3500（mock 假設值，Smoke 實測後修正）
 //   MOCK_INIT_MEAN_MS   開場問候平均回應時間，預設 9570（試算表假設值）
@@ -18,7 +19,8 @@
 const http = require('http');
 
 const num = (name, def) => (process.env[name] !== undefined ? Number(process.env[name]) : def);
-const PORT = num('MOCK_PORT', 8090);
+const PORT = num('MOCK_PORT', num('PORT', 8090));
+const HOST = process.env.MOCK_HOST || '127.0.0.1';
 const P95_RATIO = num('MOCK_P95_RATIO', 2);
 const CAPACITY = num('MOCK_CAPACITY', 150);
 const LB_TIMEOUT_MS = num('MOCK_LB_TIMEOUT_MS', 30000);
@@ -72,14 +74,14 @@ function errorBody(status, errorCode, message, extra = {}) {
     return { status, errorCode, message, ...extra };
 }
 
-// 依 k6 腳本帶來的 X-Mock-Scenario header 決定回應內容（真實 BFF 不會有這個 header）
+// 依 k6 腳本帶來的 X-Load-Test-Case／X-Load-Test-Flow header 決定回應內容（真實 BFF 會忽略這些 header）
 function buildAskResponse(scenario, flow) {
     switch (scenario) {
         case 'B5': // Model Armor 攔截：BFF 以 HTTP 205 回 E1004
             return [205, errorBody(205, 'E1004', '無法回應不合適的內容，建議你詢問其他問題。')];
         case 'B4': // 知識庫外：仍為 FAQ 回答，內容為婉拒說明
             return [200, { status: 200, data: [faqItem('很抱歉，這個問題目前不在阿發的服務範圍內。')] }];
-        case 'INIT':
+        case 'B1': // 開場問候
             return [200, { status: 200, data: [faqItem('你好，我是阿發，有什麼可以幫你的嗎？')] }];
         default:
             if (flow === 'business') {
@@ -102,7 +104,8 @@ const server = http.createServer((req, res) => {
         }
 
         let kind;
-        let scenario = String(req.headers['x-mock-scenario'] || 'B2');
+        let scenario = String(req.headers['x-load-test-case'] || req.headers['x-mock-scenario'] || 'B2');
+        const flowHeader = String(req.headers['x-load-test-flow'] || '');
         if (req.method === 'POST' && req.url === '/api/chat/ask') {
             let body = {};
             try {
@@ -110,8 +113,8 @@ const server = http.createServer((req, res) => {
             } catch (_) {
                 return send(res, 422, errorBody(422, 'E1002', '格式錯誤'));
             }
-            if (body.isInitialized) scenario = 'INIT';
-            kind = scenario === 'INIT' ? 'init' : scenario.startsWith('B') ? 'faq' : 'business';
+            if (body.isInitialized) scenario = 'B1';
+            kind = scenario === 'B1' ? 'init' : ['faq', 'business'].includes(flowHeader) ? flowHeader : scenario.startsWith('B') ? 'faq' : 'business';
         } else if (req.method === 'POST' && (req.url === '/mock/login' || req.url === '/mock/otp/resend')) {
             kind = 'login';
         } else {
@@ -145,8 +148,8 @@ const server = http.createServer((req, res) => {
 });
 
 server.keepAliveTimeout = 65000;
-server.listen(PORT, '127.0.0.1', () => {
-    console.log(`[mock] listening on http://127.0.0.1:${PORT}`);
+server.listen(PORT, HOST, () => {
+    console.log(`[mock] listening on http://${HOST}:${PORT}`);
     console.log(`[mock] mean(ms)=${JSON.stringify(MEAN_MS)} p95/mean=${P95_RATIO} sigma=${SIGMA.toFixed(3)} capacity=${CAPACITY} timeScale=${TIME_SCALE}`);
 });
 

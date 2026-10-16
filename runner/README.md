@@ -6,7 +6,7 @@ Cloud Run Jobs 的每個 task 執行一次 [entrypoint.sh](entrypoint.sh)，各�
 |---|---|
 | [Dockerfile](Dockerfile) | 映像檔（build context 為本目錄） |
 | [entrypoint.sh](entrypoint.sh) | 每個 task 的啟動腳本 |
-| [k6/](k6/README.md) | k6 腳本（正式版與 mock 版），整個目錄打包進映像檔 |
+| [k6/](k6/README.md) | k6 正式腳本與本機 mock server，整個目錄打包進映像檔 |
 
 ## 每個 task 做的事
 
@@ -15,6 +15,7 @@ Cloud Run Jobs 的每個 task 執行一次 [entrypoint.sh](entrypoint.sh)，各�
 3. 背景每 `UPLOAD_INTERVAL_S` 秒把目前的 CSV 上傳一次，覆蓋同名檔案，讓報表 Job 隨時讀得到最新資料。
 4. k6 結束或收到 SIGTERM 時做最後一次上傳，並上傳該 task 的 dashboard HTML、`summary.json` 和 console log。
 5. k6 因門檻未通過而回 exit 99 時，預設改回 exit 0，避免 Cloud Run 把 task 判定失敗而重跑壓測。
+6. 寫出通知事件到 stdout（→ Cloud Logging → 告警寄信）：task-000 寫 `STRESS_TEST_EVENT=START`／`END`；k6 腳本的 `STRESS_TEST_EVENT=STAGE` 轉送到 stdout，其餘 k6 輸出只寫進 `k6-console.log`。
 
 ## GCS 上的檔案
 
@@ -36,10 +37,10 @@ gs://<bucket>/<prefix>/<RUN_ID>/
 | RUN_ID | 否 | Cloud Run 的 execution 名稱（`CLOUD_RUN_EXECUTION`） | 本輪壓測代號，例如 `20261020-baseline`；建議每次執行時用 `--update-env-vars` 指定 |
 | OUTPUT_URI | 是 | — | `gs://<bucket>/<prefix>`；本機模擬時為資料夾路徑 |
 | UPLOAD_INTERVAL_S | 否 | 300 | 上傳間隔（秒） |
-| K6_SCRIPT | 否 | `/app/k6/mock/script.js` | k6 腳本（映像檔內含整個 `k6/` 目錄） |
+| K6_SCRIPT | 否 | `/app/k6/script.js` | k6 腳本（映像檔內含整個 `k6/` 目錄） |
 | WORK_DIR | 否 | `/tmp/k6-out` | 本機暫存目錄 |
 | THRESHOLD_FAIL_EXIT_ZERO | 否 | true | exit 99（門檻未通過）是否改回 0 |
-| BASE_URL、MIX、TIME_SCALE… | 依腳本 | — | 直接傳給 k6 腳本（`__ENV`） |
+| BASE_URL、STAGE_PLAN、SCENARIO_WEIGHTS… | 依腳本 | — | 直接傳給 k6 腳本（`__ENV`），一覽見 [k6/README.md](k6/README.md) |
 
 ## 上傳方式
 
@@ -65,7 +66,7 @@ gcloud run jobs deploy k6-runner \
 
 # 每一輪壓測：執行一次（不需要重新部署），RUN_ID 與 task 數可以每次覆寫
 gcloud run jobs execute k6-runner --region <region> \
-  --update-env-vars RUN_ID=20261020-baseline,MIX=baseline \
+  --update-env-vars RUN_ID=20261020-baseline \
   --tasks <N>
 ```
 
