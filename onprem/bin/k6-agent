@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# runner 端：由 control 的 k6ctl 透過 SSH 呼叫，不需要手動執行。
+#
+#   k6-agent start  <RUN_ID> <INDEX> <COUNT>   背景啟動 k6（只跑第 INDEX 份，共 COUNT 份）＋ sar，立即返回
+#   k6-agent status <RUN_ID> <INDEX>           印出 running <pid>／finished <exit>／dead／none
+#   k6-agent stop   <RUN_ID> <INDEX>           送 SIGTERM 給 k6（k6 會收尾並寫出摘要）
+#
+# 參數：control 事先放好的 /var/lib/k6-stress/runs/<RUN_ID>/run.env（k6 腳本參數，見 onprem/config/defaults.env）
+# 輸出（與 Cloud Run 版相同的目錄結構，報表 Job 直接讀）：
+#   runs/<RUN_ID>/raw/task-NNN.csv.gz         k6 原始數據（每 UPLOAD_INTERVAL_S 秒更新）
+#   runs/<RUN_ID>/status/task-NNN.json        狀態與 k6 exit code
+#   runs/<RUN_ID>/tasks/task-NNN/             dashboard.html、summary.json、k6-console.log、
+#                                             sar.bin、sar-summary.txt、runner.log、k6.pid、k6.exit
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/k6-stress}"
+DATA_DIR="${DATA_DIR:-/var/lib/k6-stress}"
+
+die() { echo "k6-agent: $*" >&2; exit 1; }
+
+cmd="${1:-}"; RUN_ID="${2:-}"; INDEX="${3:-}"
+[ -n "$cmd" ] && [ -n "$RUN_ID" ] && [[ "$INDEX" =~ ^[0-9]+$ ]] || die "用法：k6-agent start|status|stop <RUN_ID> <INDEX> [COUNT]"
+[[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "RUN_ID 只能用英數字、. _ -"
+
+RUN_DIR="${DATA_DIR}/runs/${RUN_ID}"
+TASK="$(printf 'task-%03d' "$INDEX")"
+TASK_DIR="${RUN_DIR}/tasks/${TASK}"
+
+alive() { [ -f "${TASK_DIR}/k6.pid" ] && kill -0 "$(cat "${TASK_DIR}/k6.pid")" 2>/dev/null; }
+
+status() {
+    if [ -f "${TASK_DIR}/k6.exit" ]; then echo "finished $(cat "${TASK_DIR}/k6.exit")"
+    elif alive; then echo "running $(cat "${TASK_DIR}/k6.pid")"
+    elif [ -f "${TASK_DIR}/k6.pid" ]; then echo "dead"
+    else echo "none"; fi
+}
+
+# 背景監督：跑 entrypoint.sh（k6），結束時記錄 exit code、停止 sar、產生 sar 摘要
+supervise() {
+    local count="$1"
+    set -a
+    # shellcheck disable=SC1091
+    . "${RUN_DIR}/run.env"
+    set +a
+    export RUN_ID TASK_INDEX="$INDEX" TASK_COUNT="$count"
+    export OUTPUT_URI="${DATA_DIR}/runs" WORK_DIR="${DATA_DIR}/work/${RUN_ID}"
+    export K6_SCRIPT="${APP_DIR}/runner/k6/script.js"
+    ulimit -n "$(ulimit -Hn)"
+
+    sar -A -o "${TASK_DIR}/sar.bin" "${SAR_INTERVAL_S:-10}" >/dev/null 2>&1 &
+    local sar_pid=$!
+
+    "${APP_DIR}/runner/entrypoint.sh" > "${TASK_DIR}/runner.log" 2>&1 &
+    local ep=$!
+    echo "$ep" > "${TASK_DIR}/k6.pid"
+    trap 'kill -TERM "$ep" 2>/dev/null || true' TERM INT
+
+    local rc=0
+    wait "$ep" || rc=$?
+    while kill -0 "$ep" 2>/dev/null; do wait "$ep" || rc=$?; done
+
+    kill "$sar_pid" 2>/dev/null || true
+    wait "$sar_pid" 2>/dev/null || true
+    {
+        echo "# $(hostname) ${RUN_ID} ${TASK}：sar 每 ${SAR_INTERVAL_S:-10} 秒取樣（原始檔 sar.bin，可用 sar -f 查看其他指標）"
+        echo; echo "## CPU"; LC_ALL=C sar -u -f "${TASK_DIR}/sar.bin"
+        echo; echo "## 記憶體"; LC_ALL=C sar -r -f "${TASK_DIR}/sar.bin"
+        echo; echo "## 網卡流量"; LC_ALL=C sar -n DEV -f "${TASK_DIR}/sar.bin" | grep -v ' lo '
+        echo; echo "## TCP 連線"; LC_ALL=C sar -n SOCK,TCP,ETCP -f "${TASK_DIR}/sar.bin"
+    } > "${TASK_DIR}/sar-summary.txt" 2>&1 || true
+    echo "$rc" > "${TASK_DIR}/k6.exit"
+}
+
+case "$cmd" in
+    start)
+        count="${4:-}"
+        [[ "$count" =~ ^[0-9]+$ ]] && [ "$INDEX" -lt "$count" ] || die "COUNT 必須大於 INDEX"
+        [ -f "${RUN_DIR}/run.env" ] || die "找不到 ${RUN_DIR}/run.env（應由 k6ctl start 放置）"
+        [ "$(status)" = none ] || die "${RUN_ID} ${TASK} 已經執行過（$(status)），請換一個 RUN_ID"
+        command -v k6 >/dev/null || die "找不到 k6，請先執行 install.sh --role runner"
+        mkdir -p "$TASK_DIR"
+        setsid nohup "$0" _supervise "$RUN_ID" "$INDEX" "$count" > "${TASK_DIR}/agent.log" 2>&1 < /dev/null &
+        for _ in $(seq 1 20); do [ -f "${TASK_DIR}/k6.pid" ] && break; sleep 0.25; done
+        status
+        ;;
+    _supervise) supervise "${4:?}" ;;
+    status) status ;;
+    stop)
+        if alive; then kill -TERM "$(cat "${TASK_DIR}/k6.pid")"; echo "stopping"; else status; fi
+        ;;
+    *) die "未知的指令：${cmd}" ;;
+esac

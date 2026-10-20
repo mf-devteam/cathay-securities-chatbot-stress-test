@@ -33,6 +33,8 @@ export const BASE_CONV_RATE = num('BASE_CONV_RATE', 118);
 // 每段對話的訊息數（開場問候之外），平均 9.5
 export const MSGS_MIN = num('MSGS_MIN', 8);
 export const MSGS_MAX = num('MSGS_MAX', 11);
+// 每段對話的聊天 API 呼叫數 ≈ 開場問候 1 次 + 平均訊息數（STAGE_PLAN 的 tps 換算也用到，須在其之前定義）
+export const CALLS_PER_CONV = 1 + (MSGS_MIN + MSGS_MAX) / 2;
 // 兩則訊息之間的思考時間（秒），±THINK_JITTER 隨機
 export const THINK_TIME_S = num('THINK_TIME_S', 20);
 export const THINK_JITTER = num('THINK_JITTER', 0.25);
@@ -42,6 +44,7 @@ if (MSGS_MIN < 1 || MSGS_MAX < MSGS_MIN) throw new Error('MSGS_MIN／MSGS_MAX �
 
 // ---------- 逐階加壓 ----------
 // 格式：階段代號:佔 1 倍:持續分鐘[:爬升分鐘]，以分號分隔（逗號會被 gcloud --update-env-vars 當成分隔符號）
+// 「佔 1 倍」也可以寫成聊天 API 的每秒請求數，例如 354tps（地端規劃以 TPS 定義階段），依每段對話的請求數換算成對話數
 // 爬升分鐘省略時用 RAMP_MIN；試算表 02 分頁 Smoke 爬升 1 分鐘、其他 3 分鐘
 // 階段代號與報表 Job 的顯示名稱對應：smoke、low5、low10、baseline、mid50、x1、x2、x3、recovery
 const DEFAULT_STAGE_PLAN = 'smoke:0.01:10:1;low5:0.05:15;low10:0.1:15;baseline:0.25:15;mid50:0.5:15;x1:1:30;recovery:0.25:15';
@@ -54,12 +57,17 @@ if (!['full', 'smoke'].includes(STAGE_SCOPE)) throw new Error(`STAGE_SCOPE 只�
 export const TIME_SCALE = num('TIME_SCALE', 1);
 export const GRACEFUL_STOP = raw('GRACEFUL_STOP', '60s');
 
+function parseLoad(text) {
+    const m = /^([0-9.]+)tps$/i.exec(text || '');
+    return m ? Number(m[1]) / CALLS_PER_CONV / BASE_CONV_RATE : Number(text);
+}
+
 function parseStagePlan(text) {
     const stages = text.split(';').map((s) => s.trim()).filter(Boolean).map((part) => {
-        const [id, pct, holdMin, rampMin] = part.split(':');
-        const stage = { id, pct: Number(pct), holdMin: Number(holdMin), rampMin: rampMin === undefined ? RAMP_MIN : Number(rampMin) };
+        const [id, load, holdMin, rampMin] = part.split(':');
+        const stage = { id, pct: parseLoad(load), holdMin: Number(holdMin), rampMin: rampMin === undefined ? RAMP_MIN : Number(rampMin) };
         if (!/^[a-z0-9_-]+$/.test(id || '') || !(stage.pct > 0) || !(stage.holdMin > 0) || !(stage.rampMin >= 0)) {
-            throw new Error(`STAGE_PLAN 格式錯誤（應為 代號:佔1倍:持續分鐘[:爬升分鐘]），收到：${part}`);
+            throw new Error(`STAGE_PLAN 格式錯誤（應為 代號:佔1倍或NNtps:持續分鐘[:爬升分鐘]），收到：${part}`);
         }
         return stage;
     });

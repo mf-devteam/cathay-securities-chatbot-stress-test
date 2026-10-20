@@ -55,7 +55,7 @@ k6/
 | THINK_JITTER | 0.25 | 思考時間 ± 比例 |
 | CONV_P95_S | 391 | 對話 p95 時長（秒），用來估 VU 數 |
 | **逐階加壓**（試算表 02 分頁） | | |
-| STAGE_PLAN | `smoke:0.01:10:1;low5:0.05:15;low10:0.1:15;baseline:0.25:15;mid50:0.5:15;x1:1:30;recovery:0.25:15` | `代號:佔1倍:持續分鐘[:爬升分鐘]`，分號分隔。一輪約 134 分鐘 |
+| STAGE_PLAN | `smoke:0.01:10:1;low5:0.05:15;low10:0.1:15;baseline:0.25:15;mid50:0.5:15;x1:1:30;recovery:0.25:15` | `代號:佔1倍:持續分鐘[:爬升分鐘]`，分號分隔。一輪約 134 分鐘。「佔1倍」也可以寫成聊天 API 每秒請求數，例如 `s3:354tps:60`（依每段對話的請求數 1＋(MSGS_MIN＋MSGS_MAX)÷2 換算；地端版用這個寫法，見 [onprem/config/defaults.env](../../onprem/config/defaults.env)） |
 | RAMP_MIN | 3 | STAGE_PLAN 沒寫爬升分鐘時的預設 |
 | STAGE_SCOPE | full | `full`＝全部階段；`smoke`＝只跑第一階段 |
 | TIME_SCALE | 1 | 階段時間壓縮倍率（只壓縮階段，不壓縮對話）；本機模擬用 |

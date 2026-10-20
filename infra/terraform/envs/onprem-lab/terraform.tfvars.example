@@ -1,0 +1,13 @@
+# 複製成 terraform.tfvars 後修改（*.tfvars 不進 git）
+project_id = "cfh-de-chatbot-lab"
+region     = "asia-east1"
+zone       = "asia-east1-b"
+
+# 校正試跑時改成規劃 p.9 的規格：
+# runner_machine_type  = "n2-standard-8"   # 8 vCPU／32 GB
+# runner_disk_gb       = 100
+# control_machine_type = "e2-standard-4"   # 4 vCPU／16 GB
+# control_disk_gb      = 200
+# disk_type            = "pd-ssd"
+# stage_plan           = ""                # 正式階段（S3 354 TPS）
+# max_vus              = 0                 # 用 defaults.env 的 10500

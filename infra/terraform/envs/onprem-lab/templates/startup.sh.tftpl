@@ -1,0 +1,44 @@
+#!/bin/bash
+# lab 專用：GCE 每次開機都會執行（log：/var/log/k6-startup.log）。
+# 從 bucket 下載程式後執行 onprem/install.sh（與證券方地端相同的安裝腳本；可重複執行）。
+# 角色：${role}
+set -euo pipefail
+exec >> /var/log/k6-startup.log 2>&1
+echo "==== $(date -Is) startup role=${role}"
+
+export PATH="$PATH:/snap/bin"
+BUCKET="${bucket}"
+SRC=/opt/k6-stress-src
+mkdir -p "$SRC"
+gcloud storage rsync --recursive --delete-unmatched-destination-objects "gs://$BUCKET/src" "$SRC"
+
+case "${role}" in
+control)
+    # lab 的 stress.env 只在第一次放置；之後在 VM 上的修改不會被覆蓋
+    if [ ! -f /etc/k6-stress/stress.env ]; then
+        mkdir -p /etc/k6-stress
+        gcloud storage cp "gs://$BUCKET/config/stress.env" /etc/k6-stress/stress.env
+    fi
+    bash "$SRC/onprem/install.sh" --role control
+    chown k6:k6 /etc/k6-stress/stress.env
+    chmod 0640 /etc/k6-stress/stress.env
+    # 公鑰給 runner 下載（私鑰不離開 control）
+    gcloud storage cp /var/lib/k6-stress/.ssh/id_ed25519.pub "gs://$BUCKET/keys/control.pub"
+    ;;
+runner)
+    # 等 control 上傳公鑰（最多 20 分鐘）
+    for _ in $(seq 1 120); do
+        gcloud storage cp "gs://$BUCKET/keys/control.pub" /tmp/control.pub 2>/dev/null && break
+        echo "等待 control 公鑰…"; sleep 10
+    done
+    args=(--role runner)
+    [ -s /tmp/control.pub ] && args+=(--authorized-key-file /tmp/control.pub)
+    bash "$SRC/onprem/install.sh" "$${args[@]}"
+    ;;
+mock)
+    mkdir -p /etc/k6-stress
+    echo "MOCK_CAPACITY=${mock_capacity}" > /etc/k6-stress/mock.env
+    bash "$SRC/onprem/install.sh" --role mock
+    ;;
+esac
+echo "==== $(date -Is) done"

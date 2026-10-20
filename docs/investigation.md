@@ -24,7 +24,7 @@
 | 項目 | 內容 |
 |---|---|
 | 系統 | 國泰證券「新阿發」AI 客服（Frontend → BFF → Middleware → AI 對話服務） |
-| 測試環境 | 客戶 SIT 測試環境（架設在我方 GCP lab 專案，Cloud Run，asia-east1）。非客戶 UAT 專案 |
+| 測試環境 | 客戶 SIT 測試環境（客戶環境，我方無法操作；Cloud Run，asia-east1）。非客戶 UAT 專案 |
 | 呼叫鏈 | 使用者 → Cloud Load Balancer（含 Cloud Armor）→ BFF（Node.js／Express）→ Middleware（Java／Spring Boot）→ AI 對話服務（Dialogflow／P3） |
 | BFF 資源 | 1 vCPU／512 MiB，單一 instance 併發上限 80，request timeout 300 秒 |
 | Middleware 資源 | 1 vCPU／512 MiB，併發上限 80，僅允許內部流量 |

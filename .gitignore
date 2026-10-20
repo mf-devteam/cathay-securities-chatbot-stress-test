@@ -13,3 +13,5 @@ results/
 *.tfvars
 !*.tfvars.example
 .terraform.tfstate.lock.info
+# 地端安裝包（onprem/bundle/build-bundle.sh）
+dist/

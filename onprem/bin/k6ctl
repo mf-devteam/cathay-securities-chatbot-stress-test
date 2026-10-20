@@ -1,0 +1,337 @@
+#!/usr/bin/env bash
+# control 端操作指令：統一控制所有 runner（規劃 p.6 執行做法）。
+#
+#   k6ctl check                      檢查 SSH、k6 版本、nofile、時間差（裝好 VM 後先跑一次）
+#   k6ctl preflight                  連線預檢：control 與每台 runner 各跑一次 k6-preflight，報告存到 preflight/
+#   k6ctl start <RUN_ID> [K=V ...]   同步程式與參數到 runner，同時啟動（K=V 只覆蓋這一輪，例如 STAGE_SCOPE=smoke）
+#   k6ctl status [RUN_ID]            以 PID 判斷每台 runner 是否跑完；exit code 區分正常結束或中止
+#   k6ctl wait [RUN_ID]              每分鐘檢查一次，全部結束後自動 collect + report
+#   k6ctl stop [RUN_ID]              全部 runner 一起停止（k6 會收尾並寫出摘要）
+#   k6ctl collect [RUN_ID]           rsync 收回 CSV、sar 與 k6 輸出（壓測中也可以）
+#   k6ctl report [RUN_ID]            collect 後合併產出 HTML 報表（壓測中執行＝截至目前的報表）
+#   k6ctl dashboard [N] [RUN_ID]     SSH tunnel 到第 N 台 runner 的 k6 即時畫面（壓測中）
+#   k6ctl list                       列出所有 RUN_ID
+#
+# RUN_ID 省略時用最近一次 start 的 RUN_ID。設定：/etc/k6-stress/stress.env（覆蓋 /opt/k6-stress/onprem/config/defaults.env）。
+# 以 k6 帳號執行；其他帳號執行時會自動 sudo -u k6。
+set -euo pipefail
+
+APP_DIR="${APP_DIR:-/opt/k6-stress}"
+DATA_DIR="${DATA_DIR:-/var/lib/k6-stress}"
+CONF_FILE="${CONF_FILE:-/etc/k6-stress/stress.env}"
+K6_USER="${K6_USER:-k6}"
+
+if [ "$(id -un)" != "$K6_USER" ] && [ -z "${K6CTL_NO_SUDO:-}" ]; then
+    exec sudo -u "$K6_USER" -H "$0" "$@"
+fi
+
+log() { echo "[k6ctl] $(date +%H:%M:%S) $*"; }
+die() { echo "[k6ctl] 錯誤：$*" >&2; exit 1; }
+
+load_config() {
+    set -a
+    # shellcheck disable=SC1091
+    . "${APP_DIR}/onprem/config/defaults.env"
+    # shellcheck disable=SC1090
+    [ -f "$CONF_FILE" ] && . "$CONF_FILE"
+    set +a
+    IFS=';' read -r -a RUNNER_HOSTS <<< "${RUNNERS:-}"
+    [ ${#RUNNER_HOSTS[@]} -gt 0 ] || die "${CONF_FILE} 未設定 RUNNERS"
+    case "${BASE_URL:-}" in ''|*'<'*) die "${CONF_FILE} 的 BASE_URL 尚未設定" ;; esac
+}
+
+rssh() { # rssh <host> <command…>
+    local host="$1"; shift
+    ssh "${RUNNER_SSH_USER}@${host}" -- "$@"
+}
+
+latest_run() {
+    local d
+    d="$(ls -1t "${DATA_DIR}/runs" 2>/dev/null | head -1)"
+    [ -n "$d" ] || die "還沒有任何壓測紀錄"
+    echo "$d"
+}
+
+# 讀取某一輪的 runner 清單（以 start 當時的順序為準，task 編號才不會錯）
+load_run() {
+    RUN_ID="${1:-$(latest_run)}"
+    RUN_DIR="${DATA_DIR}/runs/${RUN_ID}"
+    [ -f "${RUN_DIR}/runners.txt" ] || die "找不到 ${RUN_ID}（k6ctl list 查看）"
+    mapfile -t RUN_HOSTS < "${RUN_DIR}/runners.txt"
+}
+
+# 對每台 runner 平行執行，輸出依 runner 順序排列
+each_runner() { # each_runner <function> ；function 參數：<index> <host>
+    local fn="$1" i tmp
+    tmp="$(mktemp -d)"
+    for i in "${!RUN_HOSTS[@]}"; do
+        "$fn" "$i" "${RUN_HOSTS[$i]}" > "${tmp}/${i}" 2>&1 &
+    done
+    wait || true
+    for i in "${!RUN_HOSTS[@]}"; do cat "${tmp}/${i}"; done
+    rm -rf "$tmp"
+}
+
+exit_meaning() {
+    case "$1" in
+        0) echo "正常結束（門檻通過）" ;;
+        99) echo "門檻未過或觸發自動中止（見 k6-console.log）" ;;
+        105) echo "手動中止" ;;
+        107|108) echo "腳本錯誤或中止（見 k6-console.log）" ;;
+        *) echo "異常結束（見 runner.log）" ;;
+    esac
+}
+
+# ---------- check ----------
+check_one() {
+    local i="$1" host="$2" out err
+    err="$(mktemp)"
+    if ! out="$(rssh "$host" 'echo "$(k6 version 2>/dev/null | head -1 | cut -d" " -f2)|$(ulimit -n)|$(date +%s.%N)"' 2>"$err")"; then
+        printf '  %-3s %-20s ✗ SSH 失敗：%s\n' "$i" "$host" "$(tail -1 "$err")"
+        rm -f "$err"
+        return
+    fi
+    rm -f "$err"
+    local ver nofile ts offset
+    IFS='|' read -r ver nofile ts <<< "$out"
+    offset="$(awk -v a="$ts" -v b="$(date +%s.%N)" 'BEGIN { printf "%.2f", a - b }')"
+    printf '  %-3s %-20s ✓ SSH　k6 %-8s nofile %-8s 時間差 %ss（含 SSH 延遲）\n' "$i" "$host" "${ver:-未安裝}" "$nofile" "$offset"
+}
+
+cmd_check() {
+    load_config
+    RUN_HOSTS=("${RUNNER_HOSTS[@]}")
+    log "受測端：${BASE_URL}"
+    log "runner（${#RUN_HOSTS[@]} 台）："
+    each_runner check_one
+}
+
+# ---------- preflight ----------
+cmd_preflight() {
+    load_config
+    RUN_HOSTS=("${RUNNER_HOSTS[@]}")
+    local out_dir="${DATA_DIR}/preflight/$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$out_dir"
+    local env_args="BASE_URL='${BASE_URL}' FRONTEND_URL='${FRONTEND_URL:-}' EXPECTED_TLS_ISSUER='${EXPECTED_TLS_ISSUER:-}'"
+
+    log "control（$(hostname)）"
+    "${APP_DIR}/onprem/preflight.sh" > "${out_dir}/$(hostname).txt" 2>&1 || true
+    sed 's/^/    /' "${out_dir}/$(hostname).txt"
+    for host in "${RUN_HOSTS[@]}"; do
+        log "runner ${host}"
+        rssh "$host" "env ${env_args} ${APP_DIR}/onprem/preflight.sh" > "${out_dir}/${host}.txt" 2>&1 ||
+            echo "（SSH 失敗或預檢未通過）" >> "${out_dir}/${host}.txt"
+        sed 's/^/    /' "${out_dir}/${host}.txt"
+    done
+    log "VM 之間 SSH 與時間差："
+    each_runner check_one | tee "${out_dir}/ssh-and-clock.txt"
+    log "報告：${out_dir}/"
+}
+
+# ---------- start ----------
+sync_one() {
+    local i="$1" host="$2"
+    rsync -a --delete --exclude results/ "${APP_DIR}/runner/" "${RUNNER_SSH_USER}@${host}:${APP_DIR}/runner/" &&
+        rsync -a --delete "${APP_DIR}/onprem/" "${RUNNER_SSH_USER}@${host}:${APP_DIR}/onprem/" &&
+        rssh "$host" "mkdir -p ${DATA_DIR}/runs/${RUN_ID}" &&
+        rsync -a "${RUN_DIR}/run.env" "${RUNNER_SSH_USER}@${host}:${DATA_DIR}/runs/${RUN_ID}/run.env" &&
+        echo "  ${host} 已同步" || echo "  ${host} 同步失敗"
+}
+
+start_one() {
+    local i="$1" host="$2" res
+    res="$(rssh "$host" "${APP_DIR}/onprem/bin/k6-agent start ${RUN_ID} ${i} ${#RUN_HOSTS[@]}" 2>&1)" || true
+    printf '  task-%03d %-20s %s\n' "$i" "$host" "$res"
+}
+
+cmd_start() {
+    local yes=false overrides=() arg
+    RUN_ID=""
+    for arg in "$@"; do
+        case "$arg" in
+            -y|--yes) yes=true ;;
+            *=*) overrides+=("$arg") ;;
+            *) [ -z "$RUN_ID" ] && RUN_ID="$arg" || die "多餘的參數：${arg}" ;;
+        esac
+    done
+    [ -n "$RUN_ID" ] || die "用法：k6ctl start <RUN_ID> [K=V ...] [--yes]"
+    [[ "$RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "RUN_ID 只能用英數字、. _ -"
+    RUN_DIR="${DATA_DIR}/runs/${RUN_ID}"
+    [ ! -e "$RUN_DIR" ] || die "${RUN_ID} 已存在，請換一個 RUN_ID"
+    load_config
+    RUN_HOSTS=("${RUNNER_HOSTS[@]}")
+    for arg in "${overrides[@]}"; do
+        [[ "${arg%%=*}" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die "覆蓋參數格式應為 名稱=值：${arg}"
+        export "${arg?}"
+    done
+
+    echo
+    echo "  RUN_ID     : ${RUN_ID}"
+    echo "  受測端     : ${BASE_URL}"
+    echo "  STAGE_PLAN : ${STAGE_PLAN}（STAGE_SCOPE=${STAGE_SCOPE:-full}）"
+    echo "  情境       : ${SCENARIO_WEIGHTS}"
+    echo "  runner     : ${RUN_HOSTS[*]}（每台 1/${#RUN_HOSTS[@]}）"
+    echo
+    if ! $yes; then
+        [ -t 0 ] || die "非互動模式請加 --yes"
+        read -r -p "確認受測端負責人已同意，開始壓測？輸入 yes：" ans
+        [ "$ans" = yes ] || die "已取消"
+    fi
+
+    mkdir -p "$RUN_DIR"
+    printf '%s\n' "${RUN_HOSTS[@]}" > "${RUN_DIR}/runners.txt"
+    {
+        echo "# k6ctl start $(date -Iseconds) by ${SUDO_USER:-$(id -un)}"
+        cat "${APP_DIR}/onprem/config/defaults.env"
+        echo; echo "# ---- ${CONF_FILE} ----"
+        [ -f "$CONF_FILE" ] && cat "$CONF_FILE"
+        echo; echo "# ---- 本輪覆蓋 ----"
+        for arg in "${overrides[@]}"; do printf '%s=%q\n' "${arg%%=*}" "${arg#*=}"; done
+        echo "RUN_ID=${RUN_ID}"
+    } > "${RUN_DIR}/run.env"
+
+    log "同步程式與參數到 runner"
+    local sync_out
+    sync_out="$(each_runner sync_one)"
+    echo "$sync_out"
+    ! grep -q 同步失敗 <<< "$sync_out" || die "有 runner 同步失敗，未啟動（可修正後用新的 RUN_ID 重試）"
+
+    log "啟動 ${#RUN_HOSTS[@]} 台 runner"
+    each_runner start_one
+    sleep 10
+    log "10 秒後狀態："
+    cmd_status "$RUN_ID" || true
+    echo
+    echo "  進度：k6ctl status ${RUN_ID}　報表：k6ctl report ${RUN_ID}　停止：k6ctl stop ${RUN_ID}"
+}
+
+# ---------- status ----------
+status_one() {
+    local i="$1" host="$2" res
+    res="$(rssh "$host" "${APP_DIR}/onprem/bin/k6-agent status ${RUN_ID} ${i}" 2>&1)" || res="ssh-failed $(echo "$res" | tail -1)"
+    echo "${i}|${host}|${res}"
+}
+
+# 回傳：0 全部結束、1 仍有執行中、2 有 runner 異常（行程不見或 SSH 失敗）
+cmd_status() {
+    load_config
+    load_run "${1:-}"
+    local running=0 bad=0 line i host state rest
+    echo "  RUN_ID=${RUN_ID}"
+    while IFS='|' read -r i host res; do
+        state="${res%% *}"; rest="${res#* }"
+        case "$state" in
+            running) running=$((running + 1)); printf '  task-%03d %-20s 執行中（PID %s）\n' "$i" "$host" "$rest" ;;
+            finished) printf '  task-%03d %-20s 已結束 exit=%s：%s\n' "$i" "$host" "$rest" "$(exit_meaning "$rest")" ;;
+            *) bad=$((bad + 1)); printf '  task-%03d %-20s 異常：%s\n' "$i" "$host" "$res" ;;
+        esac
+    done < <(each_runner status_one)
+    [ "$bad" -eq 0 ] || return 2
+    [ "$running" -eq 0 ] || return 1
+    return 0
+}
+
+cmd_wait() {
+    local interval="${WAIT_INTERVAL_S:-60}" rc out
+    load_config
+    load_run "${1:-}"
+    while true; do
+        rc=0; out="$(cmd_status "$RUN_ID")" || rc=$?
+        if [ "$rc" -ne 1 ]; then echo "$out"; break; fi
+        log "仍在執行（$(grep -c 執行中 <<< "$out") 台），${interval} 秒後再檢查"
+        sleep "$interval"
+    done
+    [ "$rc" -eq 0 ] || log "有 runner 異常，仍收集已有的數據"
+    cmd_report "$RUN_ID"
+}
+
+# ---------- stop ----------
+stop_one() {
+    local i="$1" host="$2"
+    printf '  task-%03d %-20s %s\n' "$i" "$host" "$(rssh "$host" "${APP_DIR}/onprem/bin/k6-agent stop ${RUN_ID} ${i}" 2>&1)"
+}
+
+cmd_stop() {
+    load_config
+    load_run "${1:-}"
+    log "停止 ${RUN_ID}"
+    each_runner stop_one
+    log "k6 收尾約需 1 分鐘（gracefulStop），之後 k6ctl status 確認、k6ctl report 產生報表"
+}
+
+# ---------- collect／report ----------
+collect_one() {
+    local i="$1" host="$2"
+    if rsync -a --exclude run.env "${RUNNER_SSH_USER}@${host}:${DATA_DIR}/runs/${RUN_ID}/" "${RUN_DIR}/"; then
+        echo "  ${host} ✓"
+    else
+        echo "  ${host} ✗ rsync 失敗"
+    fi
+}
+
+cmd_collect() {
+    load_config
+    load_run "${1:-}"
+    log "收集 ${RUN_ID} → ${RUN_DIR}"
+    each_runner collect_one
+}
+
+cmd_report() {
+    load_config
+    load_run "${1:-}"
+    cmd_collect "$RUN_ID"
+    log "產生報表"
+    (
+        set -a
+        # shellcheck disable=SC1091
+        . "${RUN_DIR}/run.env"
+        set +a
+        py="${APP_DIR}/venv/bin/python3"
+        [ -x "$py" ] || py=python3
+        "$py" "${APP_DIR}/report-job/main.py" --source "$RUN_DIR" --run-id "$RUN_ID" \
+            --expected-tasks "${#RUN_HOSTS[@]}" --title "${REPORT_TITLE}"
+    )
+    log "報表：${RUN_DIR}/reports/latest.html"
+    log "各 runner 的 sar 摘要：${RUN_DIR}/tasks/task-*/sar-summary.txt"
+}
+
+# ---------- dashboard ----------
+# runner 的 k6 即時畫面只聽 127.0.0.1:5665；在 control 開 SSH tunnel 轉到 control 的 127.0.0.1:<port>
+cmd_dashboard() {
+    load_config
+    load_run "${2:-}"
+    local i="${1:-0}"
+    [[ "$i" =~ ^[0-9]+$ ]] && [ "$i" -lt "${#RUN_HOSTS[@]}" ] || die "用法：k6ctl dashboard <runner 編號 0～$((${#RUN_HOSTS[@]} - 1))> [RUN_ID]"
+    local remote="${K6_WEB_DASHBOARD_PORT:-5665}" port=$((${K6_WEB_DASHBOARD_PORT:-5665} + i))
+    [ "$remote" -gt 0 ] || die "K6_WEB_DASHBOARD_PORT 未開啟"
+    log "task-$(printf %03d "$i")（${RUN_HOSTS[$i]}）的即時畫面 → control 127.0.0.1:${port}，Ctrl-C 結束"
+    echo "  本機瀏覽器要看：另開終端機建 tunnel 到 control，例如"
+    echo "    lab ：gcloud compute ssh k6-control-report-01 --tunnel-through-iap -- -N -L ${port}:127.0.0.1:${port}"
+    echo "    地端：ssh -N -L ${port}:127.0.0.1:${port} <帳號>@<control>（經跳板機）"
+    echo "  然後開 http://127.0.0.1:${port}（只代表 1/${#RUN_HOSTS[@]} 負載；整體數字看 k6ctl report）"
+    ssh -N -o ExitOnForwardFailure=yes -L "127.0.0.1:${port}:127.0.0.1:${remote}" "${RUNNER_SSH_USER}@${RUN_HOSTS[$i]}"
+}
+
+cmd_list() {
+    local d
+    for d in $(ls -1t "${DATA_DIR}/runs" 2>/dev/null); do
+        printf '  %-32s %s\n' "$d" "$(head -1 "${DATA_DIR}/runs/${d}/run.env" 2>/dev/null | sed 's/^# //')"
+    done
+}
+
+cmd="${1:-help}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    check) cmd_check ;;
+    preflight) cmd_preflight ;;
+    start) cmd_start "$@" ;;
+    status) cmd_status "$@" ;;
+    wait) cmd_wait "$@" ;;
+    stop) cmd_stop "$@" ;;
+    collect) cmd_collect "$@" ;;
+    report) cmd_report "$@" ;;
+    list) cmd_list ;;
+    dashboard) cmd_dashboard "$@" ;;
+    help|-h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+    *) die "未知的指令：${cmd}（k6ctl help）" ;;
+esac

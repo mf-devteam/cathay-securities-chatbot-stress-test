@@ -1,0 +1,3 @@
+# control 報表用的 Python 套件（規劃 p.10），裝在 /opt/k6-stress/venv；固定版本，離線包（deps/wheels）依此下載
+pandas==2.2.3
+plotly==5.24.1

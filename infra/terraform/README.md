@@ -184,7 +184,7 @@ output "nat_ips" { value = google_compute_address.nat[*].address }  # 給受測�
 
 **B. 受測系統（依參考門檻與停止條件）**
 
-受測系統的指標在受測端的專案。lab 的受測端（SIT 或 mock）也在 cfh-de-chatbot-lab，可以直接建；正式壓測時受測端在客戶專案，需要客戶授權讀取指標（把客戶專案加入本專案的 metrics scope），或由客戶自行設定。
+受測系統的指標在受測端的專案。lab（cfh-de-chatbot-lab）內的受測端（mock 或我方自行部署的目標）可以直接建；SIT／UAT 是客戶環境，我方無法操作，需要客戶授權讀取指標（把客戶專案加入本專案的 metrics scope），或由客戶自行設定。
 
 Cloud Run 的指標分不出 FAQ 與業務查詢（同一個 `/api/chat/ask`），所以延遲告警以較寬的 FAQ 門檻當上限；FAQ／業務分開的數字看報表。
 

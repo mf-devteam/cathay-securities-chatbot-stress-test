@@ -18,6 +18,12 @@ STAGE_NAMES = {
     "x2": "2 倍",
     "x3": "3 倍",
     "recovery": "Recovery 25%",
+    # 地端規劃（S0～S4，依證券方驗收規範）
+    "s0": "S0 Smoke",
+    "s1": "S1 Baseline",
+    "s2": "S2 1 倍尖峰",
+    "s3": "S3 正式門檻 3 倍",
+    "s4": "S4 Recovery",
     "drain": "收尾",
     "unknown": "未標示",
 }

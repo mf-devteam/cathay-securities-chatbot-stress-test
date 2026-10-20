@@ -102,7 +102,8 @@ event START "tasks=${TASK_COUNT} stage_scope=${STAGE_SCOPE:-full} time_scale=${T
 # ---------- 執行 k6 ----------
 export K6_CSV_TIME_FORMAT=unix_milli
 export K6_WEB_DASHBOARD=true
-export K6_WEB_DASHBOARD_PORT=-1 # 不開 HTTP server，只在結束時匯出 HTML
+# 預設不開 HTTP server，只在結束時匯出 HTML；地端版設 5665＋K6_WEB_DASHBOARD_HOST=127.0.0.1，經 SSH tunnel 看即時畫面
+export K6_WEB_DASHBOARD_PORT="${K6_WEB_DASHBOARD_PORT:--1}"
 export K6_WEB_DASHBOARD_EXPORT="${WORK_DIR}/dashboard.html"
 export RESULTS_DIR="$WORK_DIR"
 

@@ -1,7 +1,7 @@
 // 逐階加壓：STAGE_PLAN → k6 ramping-arrival-rate 的 stages，並替每個請求標上 stage／phase tag（報表 Job 依此分階段）
 import { sleep } from 'k6';
 import exec from 'k6/execution';
-import { BASE_CONV_RATE, MSGS_MAX, MSGS_MIN, RUN_ID, STAGE_PLAN, STAGE_SCOPE, TIME_SCALE } from './config.js';
+import { BASE_CONV_RATE, CALLS_PER_CONV, RUN_ID, STAGE_PLAN, STAGE_SCOPE, TIME_SCALE } from './config.js';
 
 export const ACTIVE_STAGES = STAGE_SCOPE === 'smoke' ? STAGE_PLAN.slice(0, 1) : STAGE_PLAN;
 
@@ -44,9 +44,6 @@ export function stageTags() {
     }
     return { stage: 'drain', phase: 'drain' }; // 階段結束後、gracefulStop 期間仍在跑的對話
 }
-
-// 每段對話的聊天 API 呼叫數 ≈ 開場問候 1 次 + 平均訊息數
-const CALLS_PER_CONV = 1 + (MSGS_MIN + MSGS_MAX) / 2;
 
 // 階段切換事件：由單一 VU 在每個階段開始時寫一行，runner 轉送到 Cloud Logging，觸發「進入新階段」通知
 export function stageMarker() {
