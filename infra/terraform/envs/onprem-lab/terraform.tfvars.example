@@ -3,6 +3,9 @@ project_id = "cfh-de-chatbot-lab"
 region     = "asia-east1"
 zone       = "asia-east1-b"
 
+# control／runner 用 RHEL 9（與證券方地端相同）；預設 ubuntu
+# onprem_os = "rhel"
+
 # 校正試跑時改成規劃 p.9 的規格：
 # runner_machine_type  = "n2-standard-8"   # 8 vCPU／32 GB
 # runner_disk_gb       = 100
@@ -11,3 +14,6 @@ zone       = "asia-east1-b"
 # disk_type            = "pd-ssd"
 # stage_plan           = ""                # 正式階段（S3 354 TPS）
 # max_vus              = 0                 # 用 defaults.env 的 10500
+
+# 可以經 IAP 登入 control 的帳號
+# iap_members = ["user:<你的帳號>"]

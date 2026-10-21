@@ -22,7 +22,7 @@ locals {
   mock_ip    = cidrhost(var.subnet_cidr, 20)
 
   base_url     = var.target_base_url != "" ? trimsuffix(var.target_base_url, "/") : "http://${local.mock_ip}:8090"
-  frontend_url = var.target_frontend_url != "" ? var.target_frontend_url : (var.target_base_url != "" ? "${local.base_url}/" : "${local.base_url}/healthz")
+  frontend_url = var.target_frontend_url != "" ? var.target_frontend_url : "${local.base_url}/"
 }
 
 resource "google_storage_bucket" "lab" {

@@ -58,6 +58,16 @@ variable "disk_type" {
   default     = "pd-balanced"
 }
 
+variable "onprem_os" {
+  description = "control／runner 的 OS：rhel（RHEL 9，與證券方地端相同；GCE 授權費另計）或 ubuntu。改變會重建 VM"
+  type        = string
+  default     = "ubuntu"
+  validation {
+    condition     = contains(["ubuntu", "rhel"], var.onprem_os)
+    error_message = "onprem_os 只能是 ubuntu 或 rhel。"
+  }
+}
+
 # ---------- 受測端 ----------
 variable "enable_mock" {
   description = "是否建立 mock server VM（受測端替身）"
@@ -99,6 +109,18 @@ variable "max_vus" {
   description = "全部 runner 合計的 VU 上限（小規格 VM 要調低，避免記憶體不足）；0＝用 defaults.env 的 10500"
   type        = number
   default     = 600
+}
+
+variable "enable_oslogin" {
+  description = "VM 是否用 OS Login。lab 專案屬於外部組織，外部帳號需要組織層級的 roles/compute.osLoginExternalUser；沒有時用 false，改由 gcloud compute ssh 把公鑰寫進該 VM 的 metadata"
+  type        = bool
+  default     = false
+}
+
+variable "iap_members" {
+  description = "可以經 IAP 連到 control 的帳號（只授權在 control 這台 VM 上），例如 [\"user:someone@example.com\"]"
+  type        = list(string)
+  default     = []
 }
 
 variable "iap_ssh_to_all" {

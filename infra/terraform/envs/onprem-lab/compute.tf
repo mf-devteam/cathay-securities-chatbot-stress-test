@@ -1,4 +1,6 @@
-# 4 台 VM（規劃 p.9）＋lab 專用的 mock server。全部 Ubuntu 24.04、無外部 IP、OS Login。
+# 4 台 VM（規劃 p.9）＋lab 專用的 mock server。無外部 IP。
+# control／runner 的 OS 由 var.onprem_os 決定（地端為 RHEL 9.6）；mock 固定 Ubuntu 24.04。
+# 登入：OS Login（enable_oslogin=true）或 gcloud compute ssh 寫入該 VM metadata 的公鑰（預設）。
 # 開機時 startup script 從 bucket 下載程式並執行 onprem/install.sh（與地端相同的安裝腳本）。
 
 resource "google_service_account" "control" {
@@ -25,7 +27,12 @@ resource "google_storage_bucket_iam_member" "node" {
 }
 
 locals {
-  image = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
+  images = {
+    ubuntu = "ubuntu-os-cloud/ubuntu-2404-lts-amd64"
+    rhel   = "rhel-cloud/rhel-9" # GCE 只提供最新 9.x；離線包在 9.6 的驗證用 Docker（onprem/bundle/build-in-docker.sh）
+  }
+  image      = local.images[var.onprem_os]
+  mock_image = local.images["ubuntu"]
   labels = {
     app = "k6-stress"
     env = "onprem-lab"
@@ -67,8 +74,9 @@ resource "google_compute_instance" "control" {
   }
 
   metadata = {
-    enable-oslogin = "TRUE"
-    startup-script = local.startup["control"]
+    enable-oslogin         = var.enable_oslogin ? "TRUE" : "FALSE"
+    block-project-ssh-keys = "TRUE" # 只接受寫在這台 VM 上的公鑰，不受專案層級金鑰影響
+    startup-script         = local.startup["control"]
   }
 
   # 程式與設定上傳完、NAT 可用後才開機，startup script 才拿得到
@@ -106,8 +114,9 @@ resource "google_compute_instance" "runner" {
   }
 
   metadata = {
-    enable-oslogin = "TRUE"
-    startup-script = local.startup["runner"]
+    enable-oslogin         = var.enable_oslogin ? "TRUE" : "FALSE"
+    block-project-ssh-keys = "TRUE" # 只接受寫在這台 VM 上的公鑰，不受專案層級金鑰影響
+    startup-script         = local.startup["runner"]
   }
 
   depends_on = [google_storage_bucket_object.src, google_storage_bucket_iam_member.node, google_compute_router_nat.snat]
@@ -123,7 +132,7 @@ resource "google_compute_instance" "mock" {
 
   boot_disk {
     initialize_params {
-      image = local.image
+      image = local.mock_image
       size  = 20
       type  = "pd-balanced"
     }
@@ -144,9 +153,19 @@ resource "google_compute_instance" "mock" {
   }
 
   metadata = {
-    enable-oslogin = "TRUE"
-    startup-script = local.startup["mock"]
+    enable-oslogin         = var.enable_oslogin ? "TRUE" : "FALSE"
+    block-project-ssh-keys = "TRUE" # 只接受寫在這台 VM 上的公鑰，不受專案層級金鑰影響
+    startup-script         = local.startup["mock"]
   }
 
   depends_on = [google_storage_bucket_object.src, google_storage_bucket_iam_member.node, google_compute_router_nat.snat]
+}
+
+# IAP TCP forwarding 權限（等同地端「只開跳板機到 control」）：只授權在 control 這台 VM 上
+resource "google_iap_tunnel_instance_iam_member" "control" {
+  for_each = toset(var.iap_members)
+  instance = google_compute_instance.control.name
+  zone     = var.zone
+  role     = "roles/iap.tunnelResourceAccessor"
+  member   = each.value
 }
