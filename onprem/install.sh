@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 地端壓測 VM 安裝腳本（Ubuntu 24.04；22.04 亦可）。可重複執行：已完成的步驟會略過或覆蓋成相同結果。
+# 地端壓測 VM 安裝腳本（RHEL 9.6；Ubuntu 24.04／22.04 亦可）。可重複執行：已完成的步驟會略過或覆蓋成相同結果。
 # 證券方地端 VM 由 MF 手動執行；lab（GCE）由 Terraform 的 startup script 自動執行，兩邊是同一份腳本。
 #
 # 用法（root）：
@@ -9,7 +9,7 @@
 #
 # 選項：
 #   --role runner|control|mock  必填
-#   --offline                   不連外：套件從 deps/ 安裝（先用 onprem/bundle/build-bundle.sh --with-deps 打包）
+#   --offline                   不連外：套件從 deps/ 安裝（先用 onprem/bundle/build-bundle.sh --with-deps 打包，OS 要與目標相同）
 #   --authorized-key "KEY"      runner：允許 control 以此公鑰 SSH 登入（可重複）
 #   --authorized-key-file FILE  同上，從檔案讀
 #   --ntp SERVER                設定 NTP 來源（證券方 NTP）；未指定時不改系統設定
@@ -18,6 +18,7 @@
 #
 # 做的事（依規劃 p.10～11）：
 #   全部   建立 k6 帳號、程式放到 /opt/k6-stress、rsync／curl／openssl／dig
+#          RHEL：SELinux 為 enforcing 時，設定 k6 帳號 .ssh 的 context（home 不在 /home，sshd 預設讀不到）
 #   runner k6（固定版本）、sysstat（sar）、OS 參數、允許 control 的 SSH 公鑰
 #   control 產生 SSH 金鑰、k6ctl 指令、/etc/k6-stress/stress.env、python3-venv＋pandas／plotly（/opt/k6-stress/venv）
 #   mock   nodejs 與 k6-mock systemd 服務（port 8090）
@@ -57,18 +58,53 @@ done
 case "$ROLE" in runner|control|mock) ;; *) die "--role 必須是 runner、control 或 mock" ;; esac
 [ "$(id -u)" -eq 0 ] || die "請用 root 執行（sudo）"
 . /etc/os-release
-case "${VERSION_ID:-}" in 24.04|22.04) ;; *) log "警告：只在 Ubuntu 24.04／22.04 驗證過，目前是 ${PRETTY_NAME:-未知}" ;; esac
+case " ${ID:-} ${ID_LIKE:-} " in
+    *" rhel "*|*" fedora "*) PKG=rpm; validated='RHEL 9.6' ;;
+    *" debian "*|*" ubuntu "*) PKG=deb; validated='Ubuntu 24.04／22.04' ;;
+    *) die "不支援的 OS：${PRETTY_NAME:-未知}（支援 RHEL 9、Ubuntu 24.04／22.04）" ;;
+esac
+case "${PKG}:${VERSION_ID:-}" in rpm:9.*|deb:24.04|deb:22.04) ;; *) log "警告：只在 ${validated} 驗證過，目前是 ${PRETTY_NAME:-未知}" ;; esac
 case "$(uname -m)" in x86_64) ARCH=amd64 ;; aarch64) ARCH=arm64 ;; *) die "不支援的 CPU 架構：$(uname -m)" ;; esac
 
 # ---------- 套件 ----------
-packages=(rsync curl openssl ca-certificates bind9-dnsutils)
+# 與 bundle/build-bundle.sh 的清單一致。RHEL：curl 指定指令路徑（curl 與 curl-minimal 互斥，已裝哪個都可以）；
+# python3 內建 venv；semanage（policycoreutils-python-utils）設定 SELinux context
+if [ "$PKG" = rpm ]; then
+    packages=(rsync /usr/bin/curl openssl ca-certificates bind-utils policycoreutils-python-utils openssh-clients sudo)
+else
+    packages=(rsync curl openssl ca-certificates bind9-dnsutils)
+fi
 case "$ROLE" in
     runner) packages+=(sysstat) ;;
-    control) packages+=(python3 python3-venv) ;;
+    control) packages+=(python3); [ "$PKG" = deb ] && packages+=(python3-venv) ;;
     mock) packages+=(nodejs) ;;
 esac
 
 install_packages() {
+    if [ "$PKG" = rpm ]; then
+        install_rpms
+    else
+        install_debs
+    fi
+}
+
+# RHEL：離線時把 deps/rpms 當成本機套件庫，dnf 依套件名稱解相依，只裝缺少的（已安裝的不動）
+install_rpms() {
+    local dnf_args=(-y -q --setopt=install_weak_deps=False)
+    if $OFFLINE; then
+        [ -d "${DEPS_DIR}/rpms/repodata" ] || die "離線包沒有 RHEL 套件（deps/rpms）：$(cat "${DEPS_DIR}"/*/BUILT_ON 2>/dev/null || echo 不是離線包)"
+        log "離線安裝套件：${packages[*]}（$(cat "${DEPS_DIR}/rpms/BUILT_ON")）"
+        # 套件已在打包時以 Rocky 官方金鑰驗證過簽章（見 deps/rpms/SIGNATURES），這裡不把金鑰匯入目標機
+        dnf_args+=(--disablerepo='*' --repofrompath="k6-stress-deps,file://${DEPS_DIR}/rpms"
+            --setopt=k6-stress-deps.gpgcheck=0)
+    else
+        log "安裝套件：${packages[*]}"
+    fi
+    dnf install "${dnf_args[@]}" "${packages[@]}" ||
+        die "套件安裝失敗（離線時：請確認目標是 RHEL 9.6，或用目標的版本重新打包）"
+}
+
+install_debs() {
     if $OFFLINE; then
         # 只安裝系統上還沒有的套件：已安裝的不動，避免把較新的系統套件降版
         local deb pkg todo=()
@@ -160,10 +196,19 @@ EOF
 # ---------- 時間同步 ----------
 setup_ntp() {
     [ -n "$NTP_SERVER" ] || return 0
-    if systemctl is-active --quiet chrony; then
+    local svc conf
+    for svc in chronyd chrony; do systemctl is-active --quiet "$svc" && break; svc=""; done
+    if [ -n "$svc" ]; then
+        # Ubuntu 的 chrony.conf 已含 sourcedir /etc/chrony/sources.d；RHEL（/etc/chrony.conf）沒有，補上後重啟
+        conf=/etc/chrony/chrony.conf; [ -f "$conf" ] || conf=/etc/chrony.conf
         install -d /etc/chrony/sources.d
         echo "server ${NTP_SERVER} iburst" > /etc/chrony/sources.d/k6-stress.sources
-        chronyc reload sources >/dev/null
+        if grep -Eq '^[[:space:]]*sourcedir[[:space:]]+/etc/chrony/sources.d/?[[:space:]]*$' "$conf"; then
+            chronyc reload sources >/dev/null
+        else
+            printf '\n# k6-stress（install.sh --ntp）\nsourcedir /etc/chrony/sources.d\n' >> "$conf"
+            systemctl restart "$svc"
+        fi
     else
         install -d /etc/systemd/timesyncd.conf.d
         printf '[Time]\nNTP=%s\n' "$NTP_SERVER" > /etc/systemd/timesyncd.conf.d/k6-stress.conf
@@ -202,6 +247,20 @@ setup_runner_ssh() {
     [ -s "$file" ] || log "警告：尚未加入 control 的公鑰，之後用 --authorized-key-file 再執行一次"
 }
 
+# RHEL：k6 的 home 在 /var/lib（var_lib_t），SELinux enforcing 時 sshd 讀不到 authorized_keys，需標成 ssh_home_t
+setup_selinux_ssh() {
+    command -v selinuxenabled >/dev/null && selinuxenabled || return 0
+    local spec="${DATA_DIR}/\.ssh(/.*)?"
+    if command -v semanage >/dev/null; then
+        semanage fcontext -a -t ssh_home_t "$spec" 2>/dev/null || semanage fcontext -m -t ssh_home_t "$spec"
+        restorecon -R "${DATA_DIR}/.ssh"
+    else
+        chcon -R -t ssh_home_t "${DATA_DIR}/.ssh"
+        log "警告：沒有 semanage，SELinux context 用 chcon 暫時設定（系統 relabel 後會失效，再執行一次 install.sh 即可）"
+    fi
+    log "SELinux（$(getenforce)）：${DATA_DIR}/.ssh → ssh_home_t"
+}
+
 # ---------- 各角色 ----------
 setup_control() {
     install -d -o "$K6_USER" -g "$K6_USER" -m 0750 "$CONF_DIR"
@@ -211,16 +270,23 @@ setup_control() {
     fi
     ln -sf "${APP_DIR}/onprem/bin/k6ctl" /usr/local/bin/k6ctl
     setup_control_ssh
+    setup_selinux_ssh
     setup_report_venv
 }
 
-# 報表用的獨立 Python 環境（Ubuntu 24.04 預設禁止 pip 直接裝到系統 Python）：pandas、plotly（規劃 p.10）
+# 報表用的獨立 Python 環境（Ubuntu 24.04 預設禁止 pip 直接裝到系統 Python；RHEL 9 為 Python 3.9）：pandas、plotly（規劃 p.10）
 setup_report_venv() {
     local venv="${APP_DIR}/venv" req="${APP_DIR}/onprem/config/report-requirements.txt"
     [ -x "${venv}/bin/python3" ] || sudo -u "$K6_USER" python3 -m venv "$venv"
     if $OFFLINE; then
-        sudo -u "$K6_USER" "${venv}/bin/pip" install -q --no-index --find-links "${DEPS_DIR}/wheels" -r "$req" ||
-            die "離線包缺少 Python 套件（deps/wheels）"
+        # pip 以 k6 執行：安裝包可能解壓在 k6 讀不到的地方（例如 /root），先複製到暫存目錄
+        local wheels
+        wheels="$(mktemp -d)"
+        cp "${DEPS_DIR}"/wheels/*.whl "$wheels/" || die "離線包缺少 Python 套件（deps/wheels）"
+        chmod -R a+rX "$wheels"
+        sudo -u "$K6_USER" "${venv}/bin/pip" install -q --no-index --find-links "$wheels" -r "$req" ||
+            { rm -rf "$wheels"; die "離線包缺少 Python 套件（deps/wheels）"; }
+        rm -rf "$wheels"
     else
         sudo -u "$K6_USER" "${venv}/bin/pip" install -q --disable-pip-version-check -r "$req"
     fi
@@ -231,6 +297,7 @@ setup_runner() {
     install_k6
     ln -sf "${APP_DIR}/onprem/bin/k6-agent" /usr/local/bin/k6-agent
     setup_runner_ssh
+    setup_selinux_ssh
 }
 
 setup_mock() {
@@ -258,7 +325,7 @@ EOF
 }
 
 # ---------- 執行 ----------
-log "角色：${ROLE}　來源：${SRC_ROOT}　$($OFFLINE && echo 離線 || echo 線上)安裝"
+log "角色：${ROLE}　OS：${PRETTY_NAME:-?}　來源：${SRC_ROOT}　$($OFFLINE && echo 離線 || echo 線上)安裝"
 install_packages
 setup_user
 install_app

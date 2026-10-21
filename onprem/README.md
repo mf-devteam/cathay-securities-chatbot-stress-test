@@ -4,7 +4,8 @@
 
 - **業務情境：** 「業務情境組合」黃色列 8 項（與 Cloud Run 版相同）：B1 開場問候為每段對話開頭；B2、B2-2、B3、B4、B5、C1 依權重抽選（`SCENARIO_WEIGHTS='B2:28;B2-2:36;B3:15;B4:5;B5:2;C1:12'`）；A4 Token 續期需要登入，不在腳本流程內
 - **階段：** S0 5 → S1 30 → S2 118 → S3 354 → S4 30 TPS，每階爬升 1 分鐘，一輪約 2 小時 15 分
-- **lab：** 沒有地端機器時，用 [infra/terraform/envs/onprem-lab](../infra/terraform/envs/onprem-lab/README.md) 在 GCP 開 VM 模擬，跑的是同一份 `install.sh`
+- **OS：** RHEL 9.6（證券方地端）；Ubuntu 24.04／22.04 也支援（lab 預設）
+- **lab：** 沒有地端機器時，用 [infra/terraform/envs/onprem-lab](../infra/terraform/envs/onprem-lab/README.md) 在 GCP 開 VM 模擬，跑的是同一份 `install.sh`（`onprem_os = "rhel"` 改用 RHEL 9）
 
 ```
 onprem/
@@ -16,17 +17,22 @@ onprem/
 ├── config/
 │   ├── defaults.env        規劃的正式參數（隨程式版本控管）
 │   └── stress.env.example  環境設定範本 → /etc/k6-stress/stress.env
-└── bundle/build-bundle.sh  打包安裝包（--with-deps：含離線套件）
+└── bundle/
+    ├── build-bundle.sh     打包安裝包（--with-deps：含離線套件，依執行的 OS）
+    └── build-in-docker.sh  用 Docker 打包離線包：el9.6（RHEL 9.6）或 ubuntu24.04
 ```
 
 ## 1. 打包
 
 ```bash
-onprem/bundle/build-bundle.sh                # VM 可連外（線上安裝套件）
-onprem/bundle/build-bundle.sh --with-deps    # DMZ 無法連外：在同版 Ubuntu 上執行（lab control VM，或 Docker ubuntu:24.04）
+onprem/bundle/build-bundle.sh                # VM 可連外，或有內部套件庫（Satellite）：只有程式，套件線上安裝
+onprem/bundle/build-in-docker.sh el9.6       # DMZ 無法連外：RHEL 9.6 離線包（本機需要 Docker，約 2 分鐘）
+onprem/bundle/build-in-docker.sh ubuntu24.04 # 同上，Ubuntu 24.04
 ```
 
-產出 `dist/k6-stress-onprem-<版本>[-offline].tar.gz` 和 `.sha256`，帶到 control 後 scp 給各 runner。
+產出 `dist/k6-stress-onprem-<版本>[-<OS>-offline].tar.gz` 和 `.sha256`，帶到 control 後 scp 給各 runner。
+
+**RHEL 離線包的套件來源：** Rocky Linux 9.6 vault（與 RHEL 9.6 二進位相容，固定在 9.6、不會漂到新版），打包時以 Rocky 官方金鑰驗證每個 rpm 的簽章，結果在 `deps/rpms/SIGNATURES`。安裝時 dnf 只補裝目標機缺少的套件（例如 rsync、bind-utils、sysstat 與其相依），已安裝的系統套件不動，也不會把 Rocky 金鑰匯入目標機。客戶要求只用 Red Hat 簽章的套件時，在已註冊的 RHEL 9.6 上以 `EL_REPOS=system onprem/bundle/build-bundle.sh --with-deps` 打包（需要 `dnf-plugins-core`、`createrepo_c`）。
 
 ## 2. 安裝（每台 VM 一次，root）
 
@@ -45,6 +51,7 @@ sudo ./onprem/install.sh --role runner --authorized-key 'ssh-ed25519 AAAA… k6-
 | 全部 | 帳號 `k6`（home 與數據在 `/var/lib/k6-stress`）、程式在 `/opt/k6-stress`、rsync／curl／openssl／dig |
 | runner | k6 v2.3.0（驗證官方 checksum）、sysstat；`nofile 1048576`、`ip_local_port_range 1024 65535`、`tcp_tw_reuse 1`；允許 control 的公鑰 |
 | control | SSH 金鑰、`k6ctl`、`/etc/k6-stress/stress.env`；python3-venv 建立 `/opt/k6-stress/venv`，安裝 pandas、plotly（[固定版本](config/report-requirements.txt)） |
+| RHEL | SELinux enforcing 時，把 `/var/lib/k6-stress/.ssh` 標成 `ssh_home_t`（semanage＋restorecon），否則 sshd 讀不到 control 的公鑰；`--ntp` 會在 `/etc/chrony.conf` 加上 `sourcedir` 並重啟 chronyd |
 
 可以重複執行（例如換新版程式、補加公鑰）。`/etc/k6-stress/stress.env` 已存在時不會被覆蓋。
 
@@ -86,7 +93,7 @@ RUN_ID 省略時用最近一次的 RUN_ID。
 
 ## 5. 連線預檢（不經 control）
 
-VM 建好、還沒安裝時，證券方可以直接執行（只需要 Ubuntu 內建工具）：
+VM 建好、還沒安裝時，證券方可以直接執行（只需要 RHEL／Ubuntu 內建工具）：
 
 ```bash
 ./onprem/preflight.sh https://<UAT 網域>

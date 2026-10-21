@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 連線預檢（規劃 p.17）：VM 建好即可執行，不需要先安裝 k6；只送 2 個請求，不造成負載。
-# 只用 Ubuntu 內建工具：bash、curl、openssl、getent／dig、timedatectl。
+# 只用 RHEL／Ubuntu 內建工具：bash、curl、openssl、getent、timedatectl。
 #
 # 用法：
 #   ./preflight.sh https://<UAT 網域> [前端頁面網址]
