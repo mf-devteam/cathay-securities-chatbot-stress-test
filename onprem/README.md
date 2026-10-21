@@ -12,6 +12,7 @@ onprem/
 ├── install.sh              VM 安裝（--role runner|control；lab 另有 mock）
 ├── preflight.sh            連線預檢（不需要 k6，VM 建好即可執行）
 ├── bin/
+│   ├── k6menu              control：操作選單（給證券方執行人員，輸入數字操作，底層呼叫 k6ctl）
 │   ├── k6ctl               control：check／preflight／start／status／wait／stop／collect／report／dashboard
 │   └── k6-agent            runner：由 k6ctl 透過 SSH 呼叫（背景跑 k6 + sar，記錄 PID 與 exit code）
 ├── config/
@@ -61,7 +62,9 @@ sudo ./onprem/install.sh --role runner --authorized-key 'ssh-ed25519 AAAA… k6-
 
 ## 4. 操作（control）
 
-以任何帳號執行 `k6ctl` 都會自動切換成 `k6`（sudo）。
+**證券方執行人員用選單：** 輸入 `k6menu`，依數字操作（壓測前檢查、試跑、正式壓測、查看進度、停止、產生報表、打包問題資料）。RUN_ID 自動產生、開始與停止前要輸入 `yes` 確認、結果以白話顯示；出問題時選 7 產生 `/var/lib/k6-stress/support/k6-support-*.tar.gz`（系統資訊、設定、預檢結果、最近 2 輪的 log 與報表，不含原始 CSV），寄給 `SUPPORT_CONTACT`（[defaults.env](config/defaults.env)）。
+
+以下是底層指令（進階操作、除錯）。以任何帳號執行 `k6ctl`、`k6menu` 都會自動切換成 `k6`（sudo）。
 
 ```bash
 k6ctl check                         # SSH、k6 版本、nofile、時間差

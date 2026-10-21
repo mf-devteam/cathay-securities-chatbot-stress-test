@@ -1,0 +1,330 @@
+#!/usr/bin/env bash
+# 壓測操作選單（control）：給證券方執行人員用，輸入數字即可操作，不需要記 k6ctl 指令。
+# 底層呼叫 k6ctl；進階操作仍可直接用 k6ctl（k6ctl help）。
+# 以 k6 帳號執行；其他帳號執行時會自動 sudo -u k6。
+set -uo pipefail
+
+APP_DIR="${APP_DIR:-/opt/k6-stress}"
+DATA_DIR="${DATA_DIR:-/var/lib/k6-stress}"
+CONF_FILE="${CONF_FILE:-/etc/k6-stress/stress.env}"
+K6_USER="${K6_USER:-k6}"
+K6CTL="${APP_DIR}/onprem/bin/k6ctl"
+
+if [ "$(id -un)" != "$K6_USER" ]; then
+    exec sudo -u "$K6_USER" -H "$0" "$@"
+fi
+[ -t 0 ] || { echo "k6menu 需要在終端機中執行" >&2; exit 1; }
+
+if [ -t 1 ] && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
+    G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; B=$'\e[1m'; N=$'\e[0m'
+else
+    G=''; R=''; Y=''; B=''; N=''
+fi
+ok()   { echo "  ${G}✓ $*${N}"; }
+bad()  { echo "  ${R}✗ $*${N}"; }
+warn() { echo "  ${Y}! $*${N}"; }
+line() { echo "================================================"; }
+
+load_config() {
+    set -a
+    # shellcheck disable=SC1091
+    . "${APP_DIR}/onprem/config/defaults.env"
+    # shellcheck disable=SC1090
+    [ -f "$CONF_FILE" ] && . "$CONF_FILE"
+    set +a
+    CONTACT="${SUPPORT_CONTACT:-MF 壓測支援}"
+}
+
+pause() { echo; read -r -p "  按 Enter 回到選單…" _; }
+
+confirm() { # confirm <提示>：輸入 yes 才回傳 0
+    local ans
+    echo
+    read -r -p "  $1 確定請輸入 yes（其他任何輸入＝取消）：" ans
+    [ "$ans" = yes ] && return 0
+    echo "  已取消。"
+    return 1
+}
+
+latest_run() { ls -1t "${DATA_DIR}/runs" 2>/dev/null | head -1; }
+
+# 0 全部結束、1 執行中、2 有 runner 異常、3 沒有紀錄
+run_state() {
+    local run="$1"
+    [ -n "$run" ] && [ -f "${DATA_DIR}/runs/${run}/runners.txt" ] || return 3
+    "$K6CTL" status "$run" >/dev/null 2>&1
+}
+
+# 讀取某一輪實際使用的參數（run.env），算出各階段的起訖分鐘
+load_plan() { # load_plan <RUN_ID>：設定 PLAN_IDS、PLAN_TPS、PLAN_END（累計分鐘）、PLAN_TOTAL
+    local run="$1" plan scope entry id load hold ramp t=0
+    plan="$(set -a; . "${DATA_DIR}/runs/${run}/run.env" 2>/dev/null; echo "${STAGE_SCOPE:-full}|${STAGE_PLAN}")"
+    scope="${plan%%|*}"; plan="${plan#*|}"
+    PLAN_IDS=(); PLAN_TPS=(); PLAN_END=()
+    IFS=';' read -r -a entries <<< "$plan"
+    for entry in "${entries[@]}"; do
+        IFS=':' read -r id load hold ramp <<< "$entry"
+        t=$((t + ${ramp:-0} + ${hold:-0}))
+        PLAN_IDS+=("$id"); PLAN_TPS+=("${load%tps}"); PLAN_END+=("$t")
+        [ "$scope" = smoke ] && break
+    done
+    PLAN_TOTAL="$t"
+}
+
+started_epoch() { # run.env 第一行：# k6ctl start <ISO 時間> by <帳號>
+    date -d "$(head -1 "${DATA_DIR}/runs/$1/run.env" | awk '{ print $4 }')" +%s 2>/dev/null || echo 0
+}
+
+# 壓測中：已經過幾分鐘、目前在哪個階段
+progress_text() {
+    local run="$1" start elapsed i
+    load_plan "$run"
+    start="$(started_epoch "$run")"
+    elapsed=$(( ($(date +%s) - start) / 60 ))
+    for i in "${!PLAN_IDS[@]}"; do
+        if [ "$elapsed" -lt "${PLAN_END[$i]}" ]; then
+            echo "已執行 ${elapsed} 分鐘／約 ${PLAN_TOTAL} 分鐘，目前階段 ${PLAN_IDS[$i]}（${PLAN_TPS[$i]} TPS）"
+            return
+        fi
+    done
+    echo "已執行 ${elapsed} 分鐘，階段已跑完，收尾中（約 1～2 分鐘）"
+}
+
+header() {
+    local run rc=0
+    clear 2>/dev/null || true
+    line
+    echo "  ${B}新阿發 壓力測試${N}　　$(date '+%Y-%m-%d %H:%M')"
+    echo "  受測端：${BASE_URL}"
+    echo "  runner：$(tr ';' ' ' <<< "${RUNNERS}")"
+    run="$(latest_run)"
+    run_state "$run" || rc=$?
+    case "$rc" in
+        3) echo "  狀態：尚未執行過壓測" ;;
+        1) echo "  狀態：${Y}${B}壓測執行中${N}（${run}）"; echo "        $(progress_text "$run")" ;;
+        0) echo "  狀態：沒有執行中的壓測（上一輪 ${run} 已結束）" ;;
+        *) echo "  狀態：${R}上一輪 ${run} 有 runner 異常，請選 4 查看${N}" ;;
+    esac
+    line
+}
+
+menu() {
+    echo "   1) 壓測前檢查        （每次壓測前先做，約 1 分鐘）"
+    echo "   2) 開始試跑          （低流量，約 $(stage_minutes smoke) 分鐘）"
+    echo "   3) 開始正式壓測      （約 $(stage_minutes full) 分鐘）"
+    echo "   4) 查看進度"
+    echo "   5) 停止壓測"
+    echo "   6) 產生報表"
+    echo "   7) 打包問題資料      （有問題時，把產生的檔案寄給${CONTACT}）"
+    echo "   0) 離開"
+    line
+}
+
+stage_minutes() { # stage_minutes smoke|full：依目前設定估算一輪分鐘數（含收尾 1 分鐘）
+    local entry id load hold ramp t=0
+    IFS=';' read -r -a entries <<< "$STAGE_PLAN"
+    for entry in "${entries[@]}"; do
+        IFS=':' read -r id load hold ramp <<< "$entry"
+        t=$((t + ${ramp:-0} + ${hold:-0}))
+        [ "$1" = smoke ] && break
+    done
+    echo $((t + 1))
+}
+
+# ---------- 1. 壓測前檢查 ----------
+do_check() {
+    local out fails warns
+    echo
+    echo "  檢查 control、每台 runner 與受測端的連線，約 1 分鐘，請稍候…"
+    echo
+    out="$("$K6CTL" preflight 2>&1)"
+    echo "$out"
+    fails="$(grep -c '✗' <<< "$out")"
+    warns="$(grep -c '^ *! ' <<< "$out")"
+    echo
+    line
+    if [ "$fails" -eq 0 ] && [ "$warns" -eq 0 ]; then
+        ok "全部通過，可以開始壓測。建議先選 2 試跑。"
+    elif [ "$fails" -eq 0 ]; then
+        warn "連線正常，但有 ${warns} 項提醒（上方標示 ! 的項目）："
+        grep -q 'HTTP 403' <<< "$out" && warn "對話 API 回 403：受測端的 reCAPTCHA 尚未暫停，請聯絡受測端負責人。暫停前不要開始壓測。"
+        grep -q '前端頁面 HTTP' <<< "$out" && grep -q '! 4' <<< "$out" && warn "前端頁面回應異常，請把上方畫面截圖給${CONTACT}。"
+    else
+        bad "有 ${fails} 項未通過（上方標示 ✗ 的項目），請依提示處理："
+        grep -q 'SSH 失敗' <<< "$out" && bad "control 連不到 runner：確認每台 runner 都已開機，且安裝時有帶入 control 的公鑰。"
+        grep -q 'HTTP 30[1237]' <<< "$out" && bad "受測端回 302：本機 IP 尚未加入受測端白名單，請聯絡受測端負責人。"
+        grep -Eq '逾時或被拒絕|無法連線' <<< "$out" && bad "連不到受測端：防火牆未開出站，或需要經過 Proxy，請聯絡網路管理人員。"
+        grep -q '無法解析' <<< "$out" && bad "DNS 解析失敗：請聯絡網路管理人員確認 DNS 設定。"
+        grep -q 'NTP' <<< "$(grep '✗' <<< "$out")" && bad "時間未同步：請聯絡系統管理人員設定 NTP。"
+        echo "  無法排除時，選 7 打包問題資料，把檔案寄給${CONTACT}。"
+    fi
+    pause
+}
+
+# ---------- 2／3. 開始 ----------
+next_run_id() { # 今天的第幾輪：20261105-01、20261105-smoke-01
+    local prefix n=1
+    prefix="$(date +%Y%m%d)${1:+-$1}"
+    while [ -e "${DATA_DIR}/runs/$(printf '%s-%02d' "$prefix" "$n")" ]; do n=$((n + 1)); done
+    printf '%s-%02d' "$prefix" "$n"
+}
+
+do_start() { # do_start smoke|full
+    local kind="$1" run rc=0 run_id args=()
+    run="$(latest_run)"
+    run_state "$run" || rc=$?
+    if [ "$rc" -eq 1 ]; then
+        echo; bad "${run} 還在執行中，同時只能有一輪壓測。要重新開始請先選 5 停止。"
+        pause; return
+    fi
+    if [ "$kind" = smoke ]; then
+        run_id="$(next_run_id smoke)"; args=(STAGE_SCOPE=smoke)
+        echo
+        echo "  ${B}試跑${N}：只跑第一階段（低流量），確認整個流程正常。"
+    else
+        run_id="$(next_run_id)"
+        echo
+        echo "  ${B}正式壓測${N}：依序執行全部階段，流量會逐步加大到最高。"
+        warn "請確認：已先試跑成功、受測端負責人已同意、監控人員已就位。"
+    fi
+    echo "  壓測編號：${run_id}"
+    echo "  受測端　：${BASE_URL}"
+    echo "  預計時間：約 $(stage_minutes "$kind") 分鐘"
+    confirm "即將開始壓測。" || { pause; return; }
+    [ "$kind" = full ] && { confirm "再確認一次：開始正式壓測？" || { pause; return; }; }
+    echo
+    if ! "$K6CTL" start "$run_id" "${args[@]}" --yes; then
+        echo; bad "啟動失敗。請選 7 打包問題資料，把檔案寄給${CONTACT}。"
+        pause; return
+    fi
+    echo
+    ok "已開始。壓測在 runner 上執行，關閉這個視窗或斷線都不會中斷壓測。"
+    echo "  之後可以選 4 查看進度；結束後選 6 產生報表。"
+    if [ "$kind" = smoke ]; then
+        echo
+        read -r -p "  要在這裡等到試跑結束並自動產生報表嗎？（y＝等待，Enter＝回選單）" ans
+        [ "$ans" = y ] || [ "$ans" = Y ] && { "$K6CTL" wait "$run_id"; show_result "$run_id"; }
+    fi
+    pause
+}
+
+# ---------- 4. 查看進度 ----------
+show_result() { # 依各 runner 的 exit code 給白話結論
+    local run="$1" out
+    out="$("$K6CTL" status "$run" 2>&1)"
+    echo
+    line
+    if grep -q '執行中' <<< "$out"; then
+        echo "  $(progress_text "$run")"
+    elif grep -q 'exit=0：' <<< "$out" && ! grep -Eq 'exit=[1-9]|異常' <<< "$out"; then
+        ok "${run} 已結束：全部 runner 正常結束，回應時間與錯誤率都在門檻內。"
+    elif grep -q 'exit=105' <<< "$out"; then
+        warn "${run} 已手動停止。"
+    elif grep -q 'exit=99' <<< "$out"; then
+        warn "${run} 已結束：有指標超過門檻，或錯誤過多而自動停止。工具本身正常，請選 6 看報表了解哪一項超標。"
+    else
+        bad "${run} 有 runner 異常結束。請選 7 打包問題資料，把檔案寄給${CONTACT}。"
+    fi
+}
+
+do_status() {
+    local run
+    run="$(latest_run)"
+    [ -n "$run" ] || { echo; echo "  還沒有任何壓測紀錄。"; pause; return; }
+    echo
+    "$K6CTL" status "$run"
+    show_result "$run"
+    pause
+}
+
+# ---------- 5. 停止 ----------
+do_stop() {
+    local run rc=0
+    run="$(latest_run)"
+    run_state "$run" || rc=$?
+    if [ "$rc" -ne 1 ] && [ "$rc" -ne 2 ]; then
+        echo; echo "  目前沒有執行中的壓測。"; pause; return
+    fi
+    echo
+    echo "  執行中：${run}　$(progress_text "$run")"
+    confirm "停止後這一輪無法繼續，只能重新開始。" || { pause; return; }
+    "$K6CTL" stop "$run"
+    echo
+    ok "已送出停止。約 1 分鐘後全部停下，之後選 6 產生報表（停止前的數據都會保留）。"
+    pause
+}
+
+# ---------- 6. 報表 ----------
+do_report() {
+    local run rc=0
+    run="$(latest_run)"
+    [ -n "$run" ] || { echo; echo "  還沒有任何壓測紀錄。"; pause; return; }
+    run_state "$run" || rc=$?
+    echo
+    [ "$rc" -eq 1 ] && warn "${run} 還在執行中，產生的是「截至目前」的報表。"
+    echo "  產生 ${run} 的報表，請稍候…"
+    if "$K6CTL" report "$run" > "${DATA_DIR}/runs/${run}/menu-report.log" 2>&1; then
+        echo
+        ok "報表已產生："
+        echo "     ${B}${DATA_DIR}/runs/${run}/reports/latest.html${N}"
+        echo "  請用貴司平常從伺服器下載檔案的方式取出，以瀏覽器開啟（不需要連網）。"
+    else
+        tail -5 "${DATA_DIR}/runs/${run}/menu-report.log"
+        echo; bad "報表產生失敗。請選 7 打包問題資料，把檔案寄給${CONTACT}。"
+    fi
+    pause
+}
+
+# ---------- 7. 打包問題資料 ----------
+# 收集判斷問題需要的資料（不含 k6 原始 CSV 與 sar 原始檔，檔案通常在幾 MB 內）
+do_support() {
+    local ts dir out run pf
+    ts="$(date +%Y%m%d-%H%M%S)"
+    dir="$(mktemp -d)/k6-support-${ts}"
+    out="${DATA_DIR}/support/k6-support-$(hostname)-${ts}.tar.gz"
+    mkdir -p "$dir" "${DATA_DIR}/support"
+    echo
+    echo "  收集資料中，約 1 分鐘…"
+    {
+        echo "# $(date -Iseconds) $(hostname)"
+        cat /etc/redhat-release /etc/os-release 2>/dev/null | head -3
+        uname -a
+        command -v getenforce >/dev/null && echo "SELinux: $(getenforce)"
+        echo; df -h "$DATA_DIR"; echo; free -m
+        echo; echo "## 程式版本"; ls -l --time-style=long-iso "${APP_DIR}/onprem/bin/" "${APP_DIR}/runner/k6/"
+        echo; echo "## k6ctl check"; "$K6CTL" check 2>&1
+    } > "${dir}/system.txt" 2>&1
+    cp "$CONF_FILE" "${dir}/stress.env" 2>/dev/null
+    pf="$(ls -1td "${DATA_DIR}"/preflight/*/ 2>/dev/null | head -1)"
+    [ -n "$pf" ] && cp -r "$pf" "${dir}/preflight-latest"
+    for run in $(ls -1t "${DATA_DIR}/runs" 2>/dev/null | head -2); do
+        "$K6CTL" collect "$run" > /dev/null 2>&1 || true
+        (cd "${DATA_DIR}/runs" && find "$run" -type f \( -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.env' \
+            -o -name 'k6.exit' -o -name 'latest.html' \) -print0 | rsync -a --from0 --files-from=- ./ "${dir}/runs/")
+    done
+    tar -C "$(dirname "$dir")" -czf "$out" "$(basename "$dir")"
+    rm -rf "$(dirname "$dir")"
+    echo
+    ok "已打包：${B}${out}${N}（$(du -h "$out" | cut -f1)）"
+    echo "  請取出這個檔案寄給${CONTACT}，並簡單說明發生了什麼事（做了哪個選項、看到什麼畫面）。"
+    pause
+}
+
+# ---------- 主程式 ----------
+load_config
+while true; do
+    header
+    menu
+    read -r -p "  請輸入數字：" choice
+    case "$choice" in
+        1) do_check ;;
+        2) do_start smoke ;;
+        3) do_start full ;;
+        4) do_status ;;
+        5) do_stop ;;
+        6) do_report ;;
+        7) do_support ;;
+        0|q|Q) echo; exit 0 ;;
+        *) ;;
+    esac
+done
