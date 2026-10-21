@@ -22,13 +22,14 @@ control)
     bash "$SRC/onprem/install.sh" --role control
     chown k6:k6 /etc/k6-stress/stress.env
     chmod 0640 /etc/k6-stress/stress.env
-    # 公鑰給 runner 下載（私鑰不離開 control）
-    gcloud storage cp /var/lib/k6-stress/.ssh/id_ed25519.pub "gs://$BUCKET/keys/control.pub"
+    # 公鑰給 runner 下載（私鑰不離開 control）。檔名帶 instance ID：control 重建後，runner 不會拿到上一台 control 的公鑰
+    id="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/id)"
+    gcloud storage cp /var/lib/k6-stress/.ssh/id_ed25519.pub "gs://$BUCKET/keys/control-$id.pub"
     ;;
 runner)
-    # 等 control 上傳公鑰（最多 20 分鐘）
+    # 等目前這台 control（instance ID ${control_id}）上傳公鑰（最多 20 分鐘）
     for _ in $(seq 1 120); do
-        gcloud storage cp "gs://$BUCKET/keys/control.pub" /tmp/control.pub 2>/dev/null && break
+        gcloud storage cp "gs://$BUCKET/keys/control-${control_id}.pub" /tmp/control.pub 2>/dev/null && break
         echo "等待 control 公鑰…"; sleep 10
     done
     args=(--role runner)

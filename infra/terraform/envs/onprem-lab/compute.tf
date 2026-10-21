@@ -37,11 +37,19 @@ locals {
     app = "k6-stress"
     env = "onprem-lab"
   }
-  startup = { for role in ["control", "runner", "mock"] : role => templatefile("${path.module}/templates/startup.sh.tftpl", {
+  startup = { for role in ["control", "mock"] : role => templatefile("${path.module}/templates/startup.sh.tftpl", {
     role          = role
     bucket        = google_storage_bucket.lab.name
     mock_capacity = var.mock_capacity
+    control_id    = ""
   }) }
+  # runner 依 control 的 instance ID 取公鑰（另外產生，避免 control 參照自己）
+  runner_startup = templatefile("${path.module}/templates/startup.sh.tftpl", {
+    role          = "runner"
+    bucket        = google_storage_bucket.lab.name
+    mock_capacity = var.mock_capacity
+    control_id    = google_compute_instance.control.instance_id
+  })
 }
 
 resource "google_compute_instance" "control" {
@@ -116,10 +124,15 @@ resource "google_compute_instance" "runner" {
   metadata = {
     enable-oslogin         = var.enable_oslogin ? "TRUE" : "FALSE"
     block-project-ssh-keys = "TRUE" # 只接受寫在這台 VM 上的公鑰，不受專案層級金鑰影響
-    startup-script         = local.startup["runner"]
+    startup-script         = local.runner_startup
   }
 
   depends_on = [google_storage_bucket_object.src, google_storage_bucket_iam_member.node, google_compute_router_nat.snat]
+
+  # control 重建（新的 SSH 金鑰）時一起重建：startup script 只在開機時執行，才會取得新 control 的公鑰
+  lifecycle {
+    replace_triggered_by = [google_compute_instance.control.id]
+  }
 }
 
 resource "google_compute_instance" "mock" {
