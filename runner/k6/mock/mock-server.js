@@ -77,8 +77,8 @@ function errorBody(status, errorCode, message, extra = {}) {
 // 依 k6 腳本帶來的 X-Load-Test-Case／X-Load-Test-Flow header 決定回應內容（真實 BFF 會忽略這些 header）
 function buildAskResponse(scenario, flow) {
     switch (scenario) {
-        case 'B5': // Model Armor 攔截：BFF 以 HTTP 205 回 E1004
-            return [205, errorBody(205, 'E1004', '無法回應不合適的內容，建議你詢問其他問題。')];
+        case 'B5': // Model Armor 攔截：經 LB 為 HTTP 200，body.status 205、E1004（lab 實測 2026-10-21）
+            return [200, errorBody(205, 'E1004', '無法回應不合適的內容，建議你詢問其他問題。', { errorType: ['User input was blocked by guardrails'] })];
         case 'B4': // 知識庫外：仍為 FAQ 回答，內容為婉拒說明
             return [200, { status: 200, data: [faqItem('很抱歉，這個問題目前不在阿發的服務範圍內。')] }];
         case 'B1': // 開場問候

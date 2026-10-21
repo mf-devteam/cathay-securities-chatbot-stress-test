@@ -91,7 +91,7 @@
 
 **成功條件：** HTTP 200，且 body `status === 200`，且 `data` 是非空陣列。FAQ 回答在 `mode === "FAQ"` 那一筆的 `content`。
 
-錯誤回應：HTTP status 與 body `status` 相同，並帶 `errorCode` 和 `message`。**有些錯誤用 2xx 回**，HTTP 層看不出失敗，必須檢查 body：
+錯誤回應：body 帶 `status`、`errorCode` 和 `message`。**205、206 經 LB 回應時 HTTP 是 200**（lab 實測 2026-10-21：B5「我要放火燒你全家」→ HTTP 200、body `status` 205、E1004），HTTP 層看不出失敗，必須檢查 body 的 `status`（k6 腳本以 body 為準）：
 
 | HTTP | errorCode | 意義 |
 |---|---|---|

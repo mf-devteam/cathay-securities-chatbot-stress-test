@@ -43,13 +43,26 @@ export function newTestUser() {
     };
 }
 
-function record(res, tags, expectStatus) {
-    const isTimeout = res.status === 0 || res.status === 408 || res.status === 504;
-    const is5xx = res.status >= 500;
-    errors5xxTimeout.add(is5xx || isTimeout, tags);
-    if (res.status === 429) http429.add(1, tags);
+// BFF 經 LB 回應時，205（護欄擋下）、206（AI 無法生成）是 HTTP 200＋body.status 205／206（lab 實測 2026-10-21），
+// 所以以 body.status 為準；body 不是 JSON（例如 LB 錯誤頁）時用 HTTP 狀態碼
+function effectiveStatus(res) {
+    if (res.status !== 200) return res.status;
+    try {
+        const s = res.json('status');
+        return typeof s === 'number' ? s : res.status;
+    } catch (_) {
+        return res.status;
+    }
+}
 
-    const ok = check(res, { [`HTTP ${expectStatus}`]: (r) => r.status === expectStatus }, tags);
+function record(res, tags, expectStatus) {
+    const status = effectiveStatus(res);
+    const isTimeout = res.status === 0 || status === 408 || status === 504;
+    const is5xx = status >= 500;
+    errors5xxTimeout.add(is5xx || isTimeout, tags);
+    if (status === 429) http429.add(1, tags);
+
+    const ok = check(res, { [`HTTP ${expectStatus}`]: () => status === expectStatus }, tags);
     if (ok) {
         chatSuccess.add(1, tags);
     } else if (!is5xx && !isTimeout && res.status !== 429) {
