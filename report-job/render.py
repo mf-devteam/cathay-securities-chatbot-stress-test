@@ -27,7 +27,8 @@ STAGE_NAMES = {
     "drain": "收尾",
     "unknown": "未標示",
 }
-FLOW_NAMES = {"all": "全部", "faq": "FAQ 問答", "business": "業務查詢", "init": "開場問候", "login": "登入", "unknown": "未分類"}
+FLOW_NAMES = {"all": "全部（聊天 API）", "faq": "FAQ 問答", "business": "業務查詢", "init": "開場問候", "login": "登入",
+              "entry": "進站（redirect、session-info）", "page": "頁面載入 API", "bubble": "泡泡回饋選項", "bff": "全部 BFF 請求", "unknown": "未分類"}
 COLORS = {"sent": "#2563eb", "success": "#16a34a", "p50": "#0891b2", "p95": "#d97706", "p99": "#dc2626",
           "faq": "#7c3aed", "business": "#0d9488", "err": "#dc2626", "vus": "#475569", "ref": "#9ca3af", "stop": "#dc2626"}
 

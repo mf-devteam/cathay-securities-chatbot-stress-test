@@ -21,6 +21,11 @@ if (!IS_LOCAL_TARGET && !bool('ALLOW_REMOTE_TARGET', 'false')) {
     throw new Error(`BASE_URL 不是本機（${BASE_URL}）：對 lab／UAT 壓測時需設定 ALLOW_REMOTE_TARGET=true`);
 }
 export const REQUEST_TIMEOUT = raw('REQUEST_TIMEOUT', '60s');
+// 模擬前端的完整請求（見 lib/frontend.js）：進站 /api/redirect → 載入頁面（維護檢查、session-info、招呼語、
+// dynamicType、reCAPTCHA siteKey）→ 每個訊息泡泡掛載時抓回饋選項。false＝只打 /api/chat/ask
+export const SIMULATE_FRONTEND = bool('SIMULATE_FRONTEND', 'true');
+// 前端頁面網址（進站 302 導向的目標，與連線預檢步驟 4 相同）；有設定時每位訪客 GET 一次頁面 HTML（不含 JS／CSS 等靜態檔）
+export const FRONTEND_URL = String(raw('FRONTEND_URL', ''));
 export const CHANNEL = raw('CHANNEL', 'web');
 export const DEVICE = raw('DEVICE', 'Web');
 

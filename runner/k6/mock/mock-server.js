@@ -1,5 +1,5 @@
 // 新阿發 BFF 的本機 mock server：只用來看 k6 dashboard 長相，不連任何真實環境。
-// 模擬 POST /api/chat/ask（回應格式同 BFF）、登入與 OTP 重送。
+// 模擬 POST /api/chat/ask（回應格式同 BFF）、登入與 OTP 重送，以及前端的進站與頁面 API（/api/redirect、session-info、dynamicType…）。
 // 回應時間依情境抽樣（對數常態分布），並隨同時處理中的請求數變慢，用來模擬加壓後的惡化。
 //
 // 啟動：node mock-server.js        （預設 http://127.0.0.1:8090）
@@ -95,12 +95,63 @@ function faqItem(content) {
     return { mode: 'FAQ', isLogin: false, content, hasReferences: false, references: [], botNewMsgId: Math.random().toString(16).slice(2), link: [] };
 }
 
+// ---------- 前端在聊天 API 以外的請求（k6 SIMULATE_FRONTEND，回應格式同 BFF） ----------
+const sessions = new Map(); // sid → 進站參數（BFF 存在 Redis）
+const SESSION_LIMIT = 200000;
+
+function newSid() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+}
+
+// 回傳「送出回應的函式」；不是前端 API 時回傳 null
+function handleFrontendApi(req, res) {
+    const url = new URL(req.url, 'http://mock');
+    const path = url.pathname;
+    const reply = (status, body) => () => send(res, status, body);
+    if (req.method === 'GET' && path === '/api/redirect') {
+        const channel = url.searchParams.get('Channel');
+        if (!channel) return reply(400, { status: 'error', message: '參數格式錯誤或缺少必要欄位' });
+        const ip = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || '';
+        const sid = newSid();
+        if (sessions.size >= SESSION_LIMIT) sessions.delete(sessions.keys().next().value);
+        sessions.set(sid, { UDID: url.searchParams.get('UDID') || '', Channel: channel, isWeb: url.searchParams.get('isWeb') || '1', ip });
+        return () => {
+            res.writeHead(302, { Location: `http://${req.headers.host}/#/?sid=${sid}` });
+            res.end(`Found. Redirecting to http://${req.headers.host}/#/?sid=${sid}`);
+        };
+    }
+    if (req.method === 'GET' && path.startsWith('/api/user/session-info/')) {
+        const data = sessions.get(path.split('/').pop());
+        return data ? reply(200, { status: 'success', data }) : reply(404, { status: 'error', message: 'Session expired or invalid stateId' });
+    }
+    if (req.method === 'GET' && path === '/api/maintenance/check') return reply(200, { maintenance: false });
+    if (req.method === 'GET' && path === '/api/dynamicType/intro') return reply(200, { status: 200, data: { greeting: [], faq: [] } });
+    if (req.method === 'POST' && path === '/api/dynamicType/get-dynamic-type') return reply(200, { status: 200, data: [] });
+    if (req.method === 'GET' && path === '/api/recaptcha/get-site-key') return reply(200, { siteKey: '' });
+    if (req.method === 'GET' && path === '/') {
+        return () => {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end('<!doctype html><title>阿發（mock）</title>');
+        };
+    }
+    return null;
+}
+
 const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (chunk) => (raw += chunk));
     req.on('end', () => {
         if (req.method === 'GET' && req.url === '/healthz') {
             return send(res, 200, { status: 'OK', inflight, total, capacity: CAPACITY });
+        }
+
+        const frontend = handleFrontendApi(req, res);
+        if (frontend) {
+            // 前端的輔助 API 只碰 Redis／Firestore，回應快（10～60 ms，同樣受 MOCK_TIME_SCALE 影響）
+            return setTimeout(() => frontend(), (10 + Math.random() * 50) * TIME_SCALE);
         }
 
         let kind;

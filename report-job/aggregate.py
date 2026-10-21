@@ -206,6 +206,10 @@ def _nice_bucket(total_s: float, max_points: int = 150) -> int:
     return 900
 
 
+# 前端在聊天 API 以外的請求（k6 SIMULATE_FRONTEND）：另外統計，不計入「全部」與每秒請求數（TPS 依規劃只算聊天 API）
+AUX_FLOWS = ("entry", "page", "bubble")
+
+
 def compute(c: Collector, stage_order: list[str]) -> dict:
     n = len(c.ts)
     if n == 0:
@@ -215,7 +219,11 @@ def compute(c: Collector, stage_order: list[str]) -> dict:
     t1 = max(c.ts)
     flows = c.flows.names
     # 報表上類別的固定順序；其他未知類別排在後面
-    flow_order = [f for f in ("faq", "business", "init", "login") if f in flows] + [f for f in flows if f not in ("faq", "business", "init", "login")]
+    known = ("faq", "business", "init", "login") + AUX_FLOWS
+    flow_order = [f for f in known if f in flows] + [f for f in flows if f not in known]
+    is_aux = [f in AUX_FLOWS for f in flows]
+    if any(is_aux):
+        flow_order.append("bff")  # 全部 BFF 請求（聊天 API＋前端請求）
     stages = c.stages.names
     phases = c.phases.names
     hold = phases.index("hold") if "hold" in phases else -1
@@ -225,13 +233,14 @@ def compute(c: Collector, stage_order: list[str]) -> dict:
     for i in range(n):
         fl = flows[c.flow[i]]
         d, o = c.dur[i], c.outcome[i]
-        for key in (("all", "all"), ("all", fl)):
-            g = groups.setdefault(key, (array("d"), array("b")))
+        cats = (fl, "bff") if is_aux[c.flow[i]] else ("all", fl, "bff")
+        for cat in cats:
+            g = groups.setdefault(("all", cat), (array("d"), array("b")))
             g[0].append(d)
             g[1].append(o)
         if c.phase[i] == hold:
             st = stages[c.stage[i]]
-            for key in ((st, "all"), (st, fl)):
+            for key in [(st, cat) for cat in cats]:
                 g = groups.setdefault(key, (array("d"), array("b")))
                 g[0].append(d)
                 g[1].append(o)
@@ -285,6 +294,8 @@ def compute(c: Collector, stage_order: list[str]) -> dict:
     all_d = [array("d") for _ in range(nb)]
     for i in range(n):
         b = int((c.ts[i] - t0) / 1000.0 // bucket_s)
+        if is_aux[c.flow[i]]:
+            continue  # 時間序列只畫聊天 API
         sent[b] += 1
         o = c.outcome[i]
         if o == SUCCESS:

@@ -19,6 +19,7 @@ import {
     PRE_VUS,
     RESULTS_DIR,
     RUN_ID,
+    SIMULATE_FRONTEND,
     STAGE_SCOPE,
     THINK_JITTER,
     THINK_TIME_S,
@@ -28,6 +29,7 @@ import {
 import { ACTIVE_STAGES, TOTAL_SECONDS, buildStages, stageMarker } from './lib/stages.js';
 import { ACTIVE, OPENING, SHARES, pickScenario } from './lib/scenarios.js';
 import { ask, conversationsDone, newTestUser } from './lib/chat.js';
+import { enterSite, entryFailed } from './lib/frontend.js';
 
 export { stageMarker };
 
@@ -87,13 +89,24 @@ export const options = {
         'errors_5xx_timeout{flow:init}': ['rate>=0'],
         'chat_success{flow:faq}': ['count>=0'],
         'chat_success{flow:business}': ['count>=0'],
+        // 只觀察：前端的進站、頁面載入、泡泡請求（SIMULATE_FRONTEND）
+        'http_req_duration{flow:entry}': ['max>=0'],
+        'http_req_duration{flow:page}': ['max>=0'],
+        'http_req_duration{flow:bubble}': ['max>=0'],
+        'http_req_failed{flow:entry}': ['rate>=0'],
+        'http_req_failed{flow:page}': ['rate>=0'],
+        'http_req_failed{flow:bubble}': ['rate>=0'],
+        'http_reqs{flow:entry}': ['count>=0'],
+        'http_reqs{flow:page}': ['count>=0'],
+        'http_reqs{flow:bubble}': ['count>=0'],
+        entry_failed: ['count>=0'],
     },
 };
 
 export function setup() {
     console.log(
         `[k6] RUN_ID=${RUN_ID} 1倍=${BASE_CONV_RATE} 對話/秒 階段=${ACTIVE_STAGES.map((s) => s.id).join('→')} ` +
-            `時間÷${TIME_SCALE} 情境占比 ${SHARES} VU=${PRE_VUS}/${MAX_VUS}（全部 task 合計）`
+            `時間÷${TIME_SCALE} 情境占比 ${SHARES} VU=${PRE_VUS}/${MAX_VUS}（全部 task 合計） 模擬前端=${SIMULATE_FRONTEND}`
     );
 }
 
@@ -104,6 +117,7 @@ function thinkTime() {
 // 一次 iteration = 一位訪客的完整對話
 export default function () {
     const user = newTestUser();
+    if (SIMULATE_FRONTEND && !enterSite(user)) entryFailed.add(1);
     ask(user, OPENING, questionFor(OPENING.id), true);
 
     const messages = MSGS_MIN + Math.floor(Math.random() * (MSGS_MAX - MSGS_MIN + 1));
@@ -122,22 +136,24 @@ export function handleSummary(data) {
     const sec = (ms) => (ms === null ? '    -' : (ms / 1000).toFixed(2).padStart(6) + 's');
     const pct = (r) => (r === null ? '-' : (r * 100).toFixed(2) + '%');
     const dur = data.state.testRunDurationMs / 1000;
+    const chatSent = ['faq', 'business', 'init'].reduce((sum, f) => sum + (v(`http_reqs{flow:${f}}`, 'count') || 0), 0);
 
     const lines = [
         '',
         `===== 新阿發壓測摘要｜RUN_ID=${RUN_ID} STAGE_SCOPE=${STAGE_SCOPE} 1倍=${BASE_CONV_RATE} 對話/秒 時間÷${TIME_SCALE} =====`,
         `情境占比     : ${SHARES}`,
         `完成對話數   : ${v('conversations_completed', 'count') || 0}`,
-        `送出／成功   : ${v('http_reqs', 'count') || 0} ／ ${v('chat_success', 'count') || 0}（${((v('http_reqs', 'count') || 0) / dur).toFixed(2)} req/s）`,
+        `送出／成功   : ${chatSent} ／ ${v('chat_success', 'count') || 0}（聊天 API ${(chatSent / dur).toFixed(2)} req/s；全部 BFF 請求 ${v('http_reqs', 'count') || 0}）`,
         `錯誤率       : ${pct(v('errors_5xx_timeout', 'rate'))}（5xx + timeout）  業務錯誤 ${v('business_errors', 'count') || 0}  HTTP 429 ${v('http_429', 'count') || 0}`,
+        `進站失敗     : ${v('entry_failed', 'count') || 0}（SIMULATE_FRONTEND=${SIMULATE_FRONTEND}）`,
         '',
         '類別        請求數      avg      p50      p95      p99      max   錯誤率',
     ];
-    for (const flow of ['faq', 'business', 'init']) {
+    for (const flow of ['faq', 'business', 'init', 'entry', 'page', 'bubble']) {
         const k = `http_req_duration{flow:${flow}}`;
-        if (!m[k]) continue;
         const count = v(`http_reqs{flow:${flow}}`, 'count');
-        const err = v(`errors_5xx_timeout{flow:${flow}}`, 'rate');
+        if (!m[k] || !count) continue;
+        const err = ['entry', 'page', 'bubble'].includes(flow) ? v(`http_req_failed{flow:${flow}}`, 'rate') : v(`errors_5xx_timeout{flow:${flow}}`, 'rate');
         lines.push(
             `${flow.padEnd(10)} ${String(count === null ? '-' : count).padStart(6)} ${sec(v(k, 'avg'))} ${sec(v(k, 'med'))} ${sec(v(k, 'p(95)'))} ${sec(v(k, 'p(99)'))} ${sec(v(k, 'max'))}   ${pct(err)}`
         );

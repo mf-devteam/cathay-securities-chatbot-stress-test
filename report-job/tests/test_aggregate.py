@@ -45,6 +45,24 @@ class GzipStreamTest(unittest.TestCase):
         self.assertEqual(r["stages"][0]["stage"], "x1")
 
 
+    def test_frontend_requests_not_counted_as_chat_api(self):
+        # SIMULATE_FRONTEND 的進站／頁面／泡泡請求另外統計，不計入「全部（聊天 API）」與時間序列
+        text = (HEADER + row(1000000000000, 9000) + row(1000000000100, 30, tags="flow=entry&case=entry&stage=x1&phase=hold")
+                + row(1000000000200, 20, tags="flow=page&case=page&stage=x1&phase=hold")
+                + row(1000000000300, 25, tags="flow=bubble&case=bubble&stage=x1&phase=hold")
+                + row(1000000000400, 40, tags="flow=bubble&case=bubble&stage=x1&phase=hold"))
+        c = aggregate.Collector()
+        c.add_task("task-000", [gzip.compress(text.encode())])
+        r = aggregate.compute(c, ["x1"])
+        ov = r["overall"]
+        self.assertEqual(ov["all"]["requests"], 1)
+        self.assertEqual(ov["bubble"]["requests"], 2)
+        self.assertEqual(ov["bff"]["requests"], 5)
+        self.assertEqual(sum(r["series"]["sent_rps"]) * r["series"]["bucket_s"], 1)
+        self.assertEqual(r["stages"][0]["flows"]["all"]["requests"], 1)
+        self.assertEqual(r["stages"][0]["flows"]["bff"]["requests"], 5)
+
+
 class PercentileTest(unittest.TestCase):
     def test_linear_interpolation_like_k6(self):
         vals = [1, 2, 3, 4]

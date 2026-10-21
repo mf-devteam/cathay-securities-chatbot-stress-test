@@ -9,7 +9,8 @@ k6/
 │   ├── config.js      讀取全部環境變數與預設值（下方參數一覽）
 │   ├── stages.js      STAGE_PLAN → 逐階加壓、stage／phase tag、階段切換事件
 │   ├── scenarios.js   業務情境與權重
-│   └── chat.js        POST /api/chat/ask、結果分類、自訂指標
+│   ├── chat.js        POST /api/chat/ask、結果分類、自訂指標
+│   └── frontend.js    模擬前端的進站、頁面載入、泡泡請求（SIMULATE_FRONTEND）
 ├── data/questions.json  各情境的問句（暫定，正式問句待提供）
 └── mock/              本機 mock server（受測端替身）
 ```
@@ -46,6 +47,8 @@ k6/
 | BASE_URL | （必填） | 受測端入口，例如 `https://<網域>`；腳本會打 `${BASE_URL}/api/chat/ask` |
 | ALLOW_REMOTE_TARGET | false | BASE_URL 不是本機時必須設為 `true`（Job 定義設定），避免本機誤打真實環境 |
 | REQUEST_TIMEOUT | 60s | 單一請求逾時（受測端 LB 30 秒會先逾時） |
+| SIMULATE_FRONTEND | true | 模擬前端在聊天 API 以外的請求（見下方「前端請求」）；`false` 只打 `/api/chat/ask` |
+| FRONTEND_URL | （空） | 前端頁面網址（進站 302 的目標）；有設定時每位訪客 GET 一次頁面 HTML，也是連線預檢步驟 4 的網址 |
 | CHANNEL／DEVICE | web／Web | `/ask` body 的 `channel`、`device` |
 | RUN_ID | local | 本輪代號；Cloud Run 上由 entrypoint.sh 帶入 |
 | **負載模型**（試算表 01 分頁） | | |
@@ -104,4 +107,10 @@ k6 run -e BASE_URL=http://127.0.0.1:8090 -e TIME_SCALE=15 -e RESULTS_DIR=runner/
 - **只有預期的狀態碼算成功：** BFF 用 205（護欄擋下）、206（AI 無法生成）回錯誤，只有 B5 預期 205。
 - **reCAPTCHA：** 壓測期間由環境負責人暫時關閉，腳本不做任何繞過。
 - **訪客每日次數（`maxCountGuest`）以 ip 計算：** 測試身分的 ip 用 RFC 2544 保留網段 `198.18.0.0/15`，不與真實使用者重疊。
+- **前端請求（SIMULATE_FRONTEND，依前端與 BFF 程式 2026-10-20）：** 每段對話除了 `/api/chat/ask`，還會送出：
+  - 進站：`GET /api/redirect?Channel=web&isWeb=1`（帶 `X-Forwarded-For: <測試身分 ip>`，BFF 會把它當成訪客 IP 存進 Redis）→ 302 取得 sid
+  - 載入頁面（同時送出）：維護檢查、`/api/user/session-info/:sid`（換回 ip／UDID／Channel，之後的 `/ask` 都用這些值）、招呼語 `/api/dynamicType/intro`、3 個 Drawer 的 `get-dynamic-type`（typeId 2、6、7）、reCAPTCHA siteKey；有設定 `FRONTEND_URL` 時另外 GET 頁面 HTML
+  - 每個訊息泡泡掛載時 `get-dynamic-type` typeId 3：開場 1＋AI 回覆數、每則訊息 2（使用者＋loading）＋AI 回覆數
+
+  一段對話約 49 個 BFF 請求（聊天 API 10.5 個）。這些請求的 `flow` 為 `entry`／`page`／`bubble`，報表另外統計，不計入聊天 API 的 TPS；`STAGE_PLAN` 的 tps 仍指聊天 API。不含 JS／CSS 等靜態檔與 Google reCAPTCHA 本身的請求。
 - **B2-2、C1 實際呼叫的 API 待確認：** 目前都走 `/api/chat/ask`；若 API 盤點（[docs/api-inventory.md](../../docs/api-inventory.md)）確認還會呼叫其他 API（例如 `/api/chat/tpi`），在 `lib/` 加對應的呼叫，並維持 `flow`／`case` tag。

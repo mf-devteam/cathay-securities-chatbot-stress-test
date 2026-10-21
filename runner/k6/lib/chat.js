@@ -2,8 +2,9 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { Counter, Rate } from 'k6/metrics';
-import { BASE_URL, CHANNEL, DEVICE, REQUEST_TIMEOUT, RUN_ID } from './config.js';
+import { BASE_URL, CHANNEL, DEVICE, REQUEST_TIMEOUT, RUN_ID, SIMULATE_FRONTEND } from './config.js';
 import { stageTags } from './stages.js';
+import { bubbleRequests, sendBubbles } from './frontend.js';
 
 // ---------- 自訂指標 ----------
 export const errors5xxTimeout = new Rate('errors_5xx_timeout'); // 錯誤率：5xx + timeout
@@ -30,13 +31,15 @@ function generateMsgId() {
     });
 }
 
-// 一段對話一個測試身分（訪客）。訪客每日次數以 ip 計算，ip 取 RFC 2544 保留網段 198.18.0.0/15，不與真實使用者重疊
+// 一段對話一個測試身分（訪客）。Web 訪客每日次數以 ip 計算（BFF buildChatLimitKey），ip 取 RFC 2544 保留網段 198.18.0.0/15，不與真實使用者重疊。
+// SIMULATE_FRONTEND 時，ip／udid／channel 會改成進站後 session-info 回傳的值（與前端相同；Web 進站的 UDID 為空字串）
 export function newTestUser() {
     const sessionId = generateSessionId();
     return {
         sessionId,
         ip: `198.${18 + Math.floor(Math.random() * 2)}.${Math.floor(Math.random() * 256)}.${1 + Math.floor(Math.random() * 254)}`,
         udid: `k6-${RUN_ID}-${sessionId}`,
+        channel: CHANNEL,
     };
 }
 
@@ -69,13 +72,13 @@ export function ask(user, scenario, userInput, isInitialized) {
         userInput,
         device: DEVICE,
         isInitialized,
-        channel: CHANNEL,
+        channel: user.channel,
         recaptchaToken: '', // 壓測期間受測端停用 reCAPTCHA，腳本不做任何繞過
         ip: user.ip,
         udid: user.udid,
         userData: {},
     };
-    const res = http.post(`${BASE_URL}/api/chat/ask`, JSON.stringify(body), {
+    const askParams = {
         headers: {
             'Content-Type': 'application/json',
             // 識別壓測流量（受測端 log 篩選用）；mock server 依此決定回應類型
@@ -87,6 +90,26 @@ export function ask(user, scenario, userInput, isInitialized) {
         redirects: 0,
         timeout: REQUEST_TIMEOUT,
         tags,
-    });
-    return record(res, tags, scenario.expectStatus);
+    };
+    if (!SIMULATE_FRONTEND) {
+        return record(http.post(`${BASE_URL}/api/chat/ask`, JSON.stringify(body), askParams), tags, scenario.expectStatus);
+    }
+
+    // 前端送出時就先掛載泡泡：一般訊息為使用者泡泡＋loading 泡泡，開場（silent）只有 loading 泡泡；
+    // 回應後 loading 換成 AI 泡泡（每筆 data 一個；錯誤時為一個錯誤泡泡），各自再抓一次回饋選項
+    const responses = http.batch([
+        { method: 'POST', url: `${BASE_URL}/api/chat/ask`, body: JSON.stringify(body), params: askParams },
+        ...bubbleRequests(isInitialized ? 1 : 2),
+    ]);
+    const res = responses[0];
+    let aiBubbles = 1;
+    try {
+        const data = res.json('data');
+        if (Array.isArray(data) && data.length > 0) aiBubbles = data.length;
+    } catch (_) {
+        // 非 JSON（例如 LB 錯誤頁）：前端顯示一個錯誤泡泡
+    }
+    const ok = record(res, tags, scenario.expectStatus);
+    sendBubbles(aiBubbles);
+    return ok;
 }
