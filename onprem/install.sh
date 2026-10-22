@@ -266,7 +266,7 @@ setup_control() {
     install -d -o "$K6_USER" -g "$K6_USER" -m 0750 "$CONF_DIR"
     if [ ! -f "${CONF_DIR}/stress.env" ]; then
         install -o "$K6_USER" -g "$K6_USER" -m 0640 "${APP_DIR}/onprem/config/stress.env.example" "${CONF_DIR}/stress.env"
-        log "已建立 ${CONF_DIR}/stress.env，請填入 BASE_URL 與 RUNNERS"
+        log "已建立 ${CONF_DIR}/stress.env，請填入 RUNNERS（runner 的 IP；UAT 網址已預先填好）"
     fi
     ln -sf "${APP_DIR}/onprem/bin/k6ctl" /usr/local/bin/k6ctl
     ln -sf "${APP_DIR}/onprem/bin/k6menu" /usr/local/bin/k6menu

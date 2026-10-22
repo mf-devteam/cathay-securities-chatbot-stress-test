@@ -58,7 +58,7 @@ sudo ./onprem/install.sh --role runner --authorized-key 'ssh-ed25519 AAAA… k6-
 
 ## 3. 設定（control）
 
-編輯 `/etc/k6-stress/stress.env`：至少填 `BASE_URL`、`FRONTEND_URL`、`RUNNERS`。其他參數沿用 [config/defaults.env](config/defaults.env)，要改時寫在 stress.env 覆蓋（不要改 defaults.env）。
+編輯 `/etc/k6-stress/stress.env`：填 `RUNNERS`（3 台 runner 的 IP）。`BASE_URL`、`FRONTEND_URL` 已預先填好 UAT（`https://afa.icathaysec-uat.com.tw`），換受測端時才要改。其他參數沿用 [config/defaults.env](config/defaults.env)，要改時寫在 stress.env 覆蓋（不要改 defaults.env）。
 
 ## 4. 操作（control）
 
