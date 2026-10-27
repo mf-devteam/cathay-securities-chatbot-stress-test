@@ -67,7 +67,17 @@ download_rpms() {
     # --alldeps：完整相依樹，不受打包機已安裝套件影響；目標機已安裝的由 dnf 略過
     dnf download -q "${repo_args[@]}" --resolve --alldeps --arch="$(uname -m)" --arch=noarch \
         --destdir "$dir" "${RPM_PACKAGES[@]}"
-    log "  $(ls "$dir"/*.rpm | wc -l) 個 rpm"
+    # 排除 Rocky 自行修改的套件（release 含 .rocky.，以及 rocky-release／repos／gpg-keys）：
+    # 與 RHEL 原廠同名套件版本號不同，會與目標機已安裝的套件衝突（例如 openssh-clients 綁定 openssh 的 rocky 版）。
+    # 這些都是 RHEL 一定已安裝的系統套件，目標機用原廠版本即可
+    local f excluded=()
+    for f in "$dir"/*.rpm; do
+        case "$(basename "$f")" in
+            *.rocky.*|rocky-*) excluded+=("$(basename "$f")"); rm -f "$f" ;;
+        esac
+    done
+    printf '%s\n' "${excluded[@]}" > "${dir}/EXCLUDED"
+    log "  $(ls "$dir"/*.rpm | wc -l) 個 rpm（排除 Rocky 專屬套件 ${#excluded[@]} 個，見 deps/rpms/EXCLUDED）"
 
     # 簽章：用獨立的 rpm 資料庫匯入金鑰驗證，不需要 root、不動打包機
     key="${EL_GPG_KEY:-/etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9}"

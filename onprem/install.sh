@@ -90,18 +90,31 @@ install_packages() {
 
 # RHEL：離線時把 deps/rpms 當成本機套件庫，dnf 依套件名稱解相依，只裝缺少的（已安裝的不動）
 install_rpms() {
-    local dnf_args=(-y -q --setopt=install_weak_deps=False)
+    local dnf_args=(-y -q --setopt=install_weak_deps=False) todo=() p
+    # 只處理還沒安裝的：已安裝的系統套件（例如 RHEL 原廠的 openssh-clients）完全不動，避免被換成離線包裡的版本
+    for p in "${packages[@]}"; do
+        if [[ "$p" == /* ]]; then
+            rpm -q --whatprovides "$p" >/dev/null 2>&1 && continue
+        else
+            rpm -q "$p" >/dev/null 2>&1 && continue
+        fi
+        todo+=("$p")
+    done
+    if [ ${#todo[@]} -eq 0 ]; then
+        log "套件都已安裝：${packages[*]}"
+        return
+    fi
     if $OFFLINE; then
         [ -d "${DEPS_DIR}/rpms/repodata" ] || die "離線包沒有 RHEL 套件（deps/rpms）：$(cat "${DEPS_DIR}"/*/BUILT_ON 2>/dev/null || echo 不是離線包)"
-        log "離線安裝套件：${packages[*]}（$(cat "${DEPS_DIR}/rpms/BUILT_ON")）"
+        log "離線安裝缺少的套件：${todo[*]}（$(cat "${DEPS_DIR}/rpms/BUILT_ON")）"
         # 套件已在打包時以 Rocky 官方金鑰驗證過簽章（見 deps/rpms/SIGNATURES），這裡不把金鑰匯入目標機
         dnf_args+=(--disablerepo='*' --repofrompath="k6-stress-deps,file://${DEPS_DIR}/rpms"
             --setopt=k6-stress-deps.gpgcheck=0)
     else
-        log "安裝套件：${packages[*]}"
+        log "安裝缺少的套件：${todo[*]}"
     fi
-    dnf install "${dnf_args[@]}" "${packages[@]}" ||
-        die "套件安裝失敗（離線時：請確認目標是 RHEL 9.6，或用目標的版本重新打包）"
+    dnf install "${dnf_args[@]}" "${todo[@]}" ||
+        die "套件安裝失敗：${todo[*]}。離線包不含 RHEL 原廠已有的系統套件（openssh、systemd 等）；若上方訊息提到找不到或衝突，請用貴司 RHEL 套件來源（安裝光碟或 Satellite）先安裝這些套件，再重新執行"
 }
 
 install_debs() {
@@ -130,7 +143,8 @@ install_debs() {
 
 # k6：單一執行檔，固定版本並驗證 checksum
 install_k6() {
-    if command -v k6 >/dev/null && k6 version 2>/dev/null | grep -q "v${K6_VERSION}\b"; then
+    # 用完整路徑：sudo 的 PATH（secure_path）不含 /usr/local/bin
+    if [ -x /usr/local/bin/k6 ] && /usr/local/bin/k6 version 2>/dev/null | grep -q "v${K6_VERSION}\b"; then
         log "k6 v${K6_VERSION} 已安裝"
         return
     fi
@@ -149,7 +163,7 @@ install_k6() {
     tar -xzf "${tmp}/${name}.tar.gz" -C "$tmp"
     install -m 0755 "${tmp}/${name}/k6" /usr/local/bin/k6
     rm -rf "$tmp"
-    log "k6 $(k6 version | head -1)"
+    log "k6 $(/usr/local/bin/k6 version | head -1)"
 }
 
 # ---------- 帳號與目錄 ----------
@@ -346,7 +360,7 @@ case "$ROLE" in
         echo "  下一步：編輯 ${CONF_DIR}/stress.env，再執行 k6menu（操作選單）或 k6ctl check"
         ;;
     runner)
-        echo "  k6：$(k6 version | head -1)"
+        echo "  k6：$(/usr/local/bin/k6 version | head -1)"
         echo "  nofile（${K6_USER}）：$(su - "$K6_USER" -c 'ulimit -n')"
         echo "  port range：$(sysctl -n net.ipv4.ip_local_port_range | tr '\t' ' ')　tw_reuse：$(sysctl -n net.ipv4.tcp_tw_reuse)"
         ;;
