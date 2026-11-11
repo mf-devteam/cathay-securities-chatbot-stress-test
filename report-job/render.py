@@ -24,6 +24,8 @@ STAGE_NAMES = {
     "s2": "S2 1 倍尖峰",
     "s3": "S3 正式門檻 3 倍",
     "s4": "S4 Recovery",
+    # 對話回應時間測試（script-qa.js）
+    "qa": "固定負載",
     "drain": "收尾",
     "unknown": "未標示",
 }

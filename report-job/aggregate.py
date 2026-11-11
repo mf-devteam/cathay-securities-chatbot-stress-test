@@ -107,7 +107,10 @@ class TaskInfo:
 class Collector:
     """逐行收集；每個請求存成數個平行陣列，最後再一次計算。"""
 
-    def __init__(self):
+    def __init__(self, extra_metrics: Iterable[str] = ()):
+        """extra_metrics：另外收集的自訂指標（例如對話回應時間測試的 qa_failed），存成 (ts, value, flow, stage, phase)。"""
+        self.extra: dict[str, list[tuple[float, float, str, str, str]]] = {m: [] for m in extra_metrics}
+        self.prefixes = WANTED_PREFIXES + tuple(f"{m}," for m in self.extra)
         self.ts = array("d")
         self.dur = array("d")
         self.flow = array("b")
@@ -134,7 +137,7 @@ class Collector:
         if not header_line:
             return info
         header = next(csv.reader([header_line]))
-        reader = csv.reader(line for line in lines if line.startswith(WANTED_PREFIXES))
+        reader = csv.reader(line for line in lines if line.startswith(self.prefixes))
         col = {name: i for i, name in enumerate(header)}
         i_metric, i_ts, i_val = col["metric_name"], col["timestamp"], col["metric_value"]
         i_status, i_expected, i_extra = col["status"], col["expected_response"], col["extra_tags"]
@@ -169,6 +172,9 @@ class Collector:
                 self.vus[task_idx].append((ts, value))
             elif metric in self.counters:
                 self.counters[metric].append((ts, value))
+            elif metric in self.extra:
+                tags = parse_tags(row[i_extra])
+                self.extra[metric].append((ts, value, tags.get("flow", "unknown"), tags.get("stage", "unknown"), tags.get("phase", "unknown")))
 
         info.truncated = stats.get("truncated", False)
         info.corrupt = stats.get("corrupt", False)

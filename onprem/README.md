@@ -64,6 +64,8 @@ sudo ./onprem/install.sh --role runner --authorized-key 'ssh-ed25519 AAAA… k6-
 
 **證券方執行人員用選單：** 輸入 `k6menu`，依數字操作（壓測前檢查、試跑、正式壓測、查看進度、停止、產生報表、打包問題資料）。RUN_ID 自動產生、開始與停止前要輸入 `yes` 確認、結果以白話顯示；出問題時選 7 產生 `/var/lib/k6-stress/support/k6-support-*.tar.gz`（系統資訊、設定、預檢結果、最近 2 輪的 log 與報表，不含原始 CSV），寄給 `SUPPORT_CONTACT`（[defaults.env](config/defaults.env)）。
 
+**對話回應時間測試（選單 8）：** 以「一問一答」為單位看回應時間與失敗率，1 分鐘爬升到 `QA_STAGE_PLAN` 的 TPS 後固定負載到結束（預設 354 TPS、30 分鐘）。門檻：FAQ p95 ≤ 8 秒（含 AI 思考時間）、業務查詢 p95 ≤ 2 秒；失敗率＝對話失敗筆數 ÷ 對話總筆數（5xx、timeout、429、業務錯誤都算失敗，失敗後繼續問）。參數在 [defaults.env](config/defaults.env) 的 `QA_*`；底層指令是 `k6ctl start <RUN_ID> TEST_TYPE=qa`。報表除了原本的 `reports/latest.html`，另外產生 `reports/qa-latest.html`。腳本說明見 [runner/k6/README.md](../runner/k6/README.md#對話回應時間測試script-qajs)。
+
 以下是底層指令（進階操作、除錯）。以任何帳號執行 `k6ctl`、`k6menu` 都會自動切換成 `k6`（sudo）。
 
 ```bash

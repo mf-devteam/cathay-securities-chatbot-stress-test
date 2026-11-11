@@ -4,6 +4,7 @@
 #   k6ctl check                      檢查 SSH、k6 版本、nofile、時間差（裝好 VM 後先跑一次）
 #   k6ctl preflight                  連線預檢：control 與每台 runner 各跑一次 k6-preflight，報告存到 preflight/
 #   k6ctl start <RUN_ID> [K=V ...]   同步程式與參數到 runner，同時啟動（K=V 只覆蓋這一輪，例如 STAGE_SCOPE=smoke）
+#                                    對話回應時間測試：k6ctl start <RUN_ID> TEST_TYPE=qa（負載用 QA_STAGE_PLAN；或用 k6menu 8）
 #   k6ctl status [RUN_ID]            以 PID 判斷每台 runner 是否跑完；exit code 區分正常結束或中止
 #   k6ctl wait [RUN_ID]              每分鐘檢查一次，全部結束後自動 collect + report
 #   k6ctl stop [RUN_ID]              全部 runner 一起停止（k6 會收尾並寫出摘要）
@@ -164,10 +165,16 @@ cmd_start() {
         [[ "${arg%%=*}" =~ ^[A-Z_][A-Z0-9_]*$ ]] || die "覆蓋參數格式應為 名稱=值：${arg}"
         export "${arg?}"
     done
+    # 對話回應時間測試：沒有另外指定 STAGE_PLAN 時用 QA_STAGE_PLAN（寫進本輪覆蓋，runner 與報表都會讀到）
+    if [ "${TEST_TYPE:-}" = qa ] && ! printf '%s\n' "${overrides[@]}" | grep -q '^STAGE_PLAN='; then
+        export STAGE_PLAN="${QA_STAGE_PLAN:?defaults.env 缺少 QA_STAGE_PLAN}"
+        overrides+=("STAGE_PLAN=${STAGE_PLAN}")
+    fi
 
     echo
     echo "  RUN_ID     : ${RUN_ID}"
     echo "  受測端     : ${BASE_URL}"
+    echo "  測試類型   : $([ "${TEST_TYPE:-}" = qa ] && echo '對話回應時間測試（script-qa.js）' || echo '正式壓測（script.js）')"
     echo "  STAGE_PLAN : ${STAGE_PLAN}（STAGE_SCOPE=${STAGE_SCOPE:-full}）"
     echo "  情境       : ${SCENARIO_WEIGHTS}"
     echo "  runner     : ${RUN_HOSTS[*]}（每台 1/${#RUN_HOSTS[@]}）"
@@ -292,6 +299,7 @@ cmd_report() {
             --expected-tasks "${#RUN_HOSTS[@]}" --title "${REPORT_TITLE}"
     )
     log "報表：${RUN_DIR}/reports/latest.html"
+    if [ -f "${RUN_DIR}/reports/qa-latest.html" ]; then log "對話回應時間報表：${RUN_DIR}/reports/qa-latest.html"; fi
     log "各 runner 的 sar 摘要：${RUN_DIR}/tasks/task-*/sar-summary.txt"
 }
 

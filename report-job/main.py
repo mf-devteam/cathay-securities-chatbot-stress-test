@@ -10,6 +10,9 @@
     REPORT_TITLE      報告標題，預設「新阿發 壓力測試報告」
     THRESHOLDS_JSON   參考門檻（毫秒／比例），預設為規劃 v1.4 的證券方文件參考值
     ANNOTATE_DASHBOARDS  預設 true：替每個已結束 task 的 k6 dashboard 產生教學版（tasks/<task>/dashboard-annotated.html）
+    QA_FAQ_MAX_MS／QA_BUSINESS_MAX_MS／QA_LATENCY_PCT／QA_FAIL_RATE
+                      對話回應時間測試（k6 script-qa.js）的門檻；原始數據有 qa_failed 時，另外產生
+                      reports/qa-latest.html（以一問一答為單位），原本的報告照常產生
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 import aggregate
 import annotate
+import qa_report
 import render
 from sources import GcsStore, open_store, read_json
 
@@ -53,7 +57,7 @@ def main() -> int:
     raw_files = [f for f in store.list("raw") if f.endswith(".csv.gz")]
     print(f"[report] {args.source}：找到 {len(raw_files)} 個 raw 檔", flush=True)
 
-    collector = aggregate.Collector()
+    collector = aggregate.Collector(extra_metrics=(qa_report.QA_METRIC,))
     warnings: list[str] = []
     for rel in raw_files:
         task = rel.rsplit("/", 1)[-1].removesuffix(".csv.gz")
@@ -87,6 +91,17 @@ def main() -> int:
     print(f"[report] 最新：{latest}", flush=True)
     if isinstance(store, GcsStore):
         print(f"[report] 下載（需有 bucket 讀取權限）：{store.console_url(f'reports/report-{stamp}.html')}", flush=True)
+
+    if result.get("requests") and qa_report.has_data(collector):
+        qa_th = qa_report.thresholds_from_env(thresholds.get("error_rate", 0.005))
+        qa = qa_report.compute(collector, result, qa_th, STAGE_ORDER)
+        qa_page = qa_report.render(qa, result, run_id=run_id, title=f"{args.title}｜對話回應時間", th=qa_th,
+                                   generated_ms=generated_ms, expected_tasks=expected, warnings=warnings).encode("utf-8")
+        qa_out = store.write(f"reports/qa-report-{stamp}.html", qa_page, "text/html; charset=utf-8")
+        store.write("reports/qa-latest.html", qa_page, "text/html; charset=utf-8")
+        qa_json = {"thresholds": qa_th, "overall": qa["overall"], "stages": qa["stages"]}
+        store.write(f"reports/qa-summary-{stamp}.json", json.dumps(qa_json, ensure_ascii=False, indent=2).encode(), "application/json")
+        print(f"[report] 對話回應時間報告：{qa_out}", flush=True)
     return 0
 
 

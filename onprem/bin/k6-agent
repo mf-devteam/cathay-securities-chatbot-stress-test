@@ -44,7 +44,12 @@ supervise() {
     set +a
     export RUN_ID TASK_INDEX="$INDEX" TASK_COUNT="$count"
     export OUTPUT_URI="${DATA_DIR}/runs" WORK_DIR="${DATA_DIR}/work/${RUN_ID}"
-    export K6_SCRIPT="${APP_DIR}/runner/k6/script.js"
+    # TEST_TYPE=qa：對話回應時間測試（script-qa.js）；未設定＝正式腳本
+    if [ "${TEST_TYPE:-}" = qa ]; then
+        export K6_SCRIPT="${APP_DIR}/runner/k6/script-qa.js"
+    else
+        export K6_SCRIPT="${APP_DIR}/runner/k6/script.js"
+    fi
     ulimit -n "$(ulimit -Hn)"
 
     sar -A -o "${TASK_DIR}/sar.bin" "${SAR_INTERVAL_S:-10}" >/dev/null 2>&1 &
