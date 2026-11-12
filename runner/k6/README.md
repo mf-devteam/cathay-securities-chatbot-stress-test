@@ -82,37 +82,38 @@ k6/
 
 ## 對話回應時間測試（script-qa.js）
 
-客戶 2026-11-12 新增的測試，與正式腳本並存（正式腳本、情境與原本的報告都不變）：
+客戶 2026-11-12 新增的測試，與正式腳本並存（正式腳本、情境與原本的報告都不變）。判定方式、負載與停止條件依客戶 2026-11-12 的回覆：
 
 | 項目 | 正式腳本 script.js | 對話回應時間測試 script-qa.js |
 |---|---|---|
-| 單位 | 請求 | 對話＝一問一答（一次 `/api/chat/ask`） |
-| 負載 | 每秒新開對話數；TPS 要等對話累積 | 直接控制聊天 API 每秒請求數：`STAGE_PLAN` 的爬升分鐘就是 TPS 爬升時間 |
+| 單位 | 請求 | 對話＝使用者提問的一問一答（一次 `/api/chat/ask`）；開場問候照送，但不計入對話統計，只單獨列出 |
+| 負載 | 每秒新開對話數；TPS 要等對話累積 | 直接控制聊天 API 每秒請求數（含開場問候，TPS 定義與地端規劃相同）：`STAGE_PLAN` 的爬升分鐘就是 TPS 爬升時間。地端 1 倍 118、3 倍 354 TPS 各跑一輪，1 分鐘爬升＋10 分鐘 |
 | 訪客流程 | 開場＋8～11 則，中間思考時間 | 每個 VU 一位訪客：開場＋8～11 則後換下一位；間隔由 TPS 決定，不另外 sleep |
 | 錯誤／失敗 | 錯誤率＝5xx＋timeout | 失敗率＝對話失敗筆數 ÷ 對話總筆數；5xx、timeout、429、業務錯誤（例如 B5 沒回 205）都算，失敗後照樣繼續問 |
 | 門檻 | THRESHOLDS_JSON | FAQ p95 ≤ 8 秒（含 AI 生成時間）、業務查詢 p95 ≤ 2 秒；只判定不中止 |
-| 停止條件 | 錯誤率、p99、429 | 只有失敗率 > `ABORT_ERROR_RATE`（保護受測端；`ABORT=false` 關閉） |
+| 停止條件 | 錯誤率、p99、429 | 預設不停止，一律打完；`QA_ABORT=true` 時失敗率 > `ABORT_ERROR_RATE` 停止 |
 | 報表 | `reports/latest.html` | 另外產生 `reports/qa-latest.html`（原本的報表照常產生） |
 
-情境、問句、請求內容與判定沿用 `lib/`。指標 `qa_failed`（Rate，tag：flow、case、stage、phase）寫進 CSV 給報表 Job；回應時間用 `http_req_duration{flow:faq|business|init}`。
+情境、問句、請求內容與判定沿用 `lib/`。指標 `qa_failed`（使用者提問）、`qa_opening_failed`（開場問候）都是 Rate，tag：flow、case、stage、phase，寫進 CSV 給報表 Job；回應時間用 `http_req_duration{flow:faq|business}`（開場問候 `flow:init` 只單獨列出）。
 
 | 參數 | 預設 | 說明 |
 |---|---|---|
-| STAGE_PLAN | （同正式腳本） | 用 TPS 寫，例如 `qa:354tps:30:1`＝1 分鐘爬升到 354 TPS、維持 30 分鐘；地端用 `QA_STAGE_PLAN`（k6ctl 自動帶入） |
+| STAGE_PLAN | （同正式腳本） | 用 TPS 寫，例如 `x3:354tps:10:1`＝1 分鐘爬升到 354 TPS、維持 10 分鐘；地端沒指定時用 `QA_STAGE_PLAN`（k6ctl 自動帶入）。1 倍、3 倍要分開跑（VU 依最高 TPS 準備，同一輪放兩段時，低的那段大多在送開場問候，提問量會偏低） |
 | QA_FAQ_MAX_MS | 8000 | FAQ 回應時間門檻（毫秒） |
 | QA_BUSINESS_MAX_MS | 2000 | 業務查詢回應時間門檻（毫秒） |
 | QA_LATENCY_PCT | 95 | 以第幾百分位判定回應時間 |
 | QA_FAIL_RATE | THRESHOLDS_JSON 的 error_rate（0.005） | 失敗率門檻 |
+| QA_ABORT | false | `true`＝失敗率 > ABORT_ERROR_RATE（ABORT_DELAY 後）自動停止 |
 | QA_PRE_VUS／QA_MAX_VUS | 最高 TPS × 20／× 30 | VU 數（全部 task 合計） |
 
-報表 Job 讀同名的 `QA_*` 環境變數；原始數據有 `qa_failed` 時自動產生對話報表。Cloud Run 版執行時設 `K6_SCRIPT=/app/k6/script-qa.js`。
+報表 Job 讀同名的 `QA_*` 環境變數；原始數據有 `qa_failed`／`qa_opening_failed` 時自動產生對話報表。Cloud Run 版執行時設 `K6_SCRIPT=/app/k6/script-qa.js`。
 
 本機：
 
 ```bash
 node runner/k6/mock/mock-server.js &
 mkdir -p runner/k6/results
-k6 run -e BASE_URL=http://127.0.0.1:8090 -e STAGE_PLAN='qa:20tps:3:1' -e TIME_SCALE=3 -e RESULTS_DIR=runner/k6/results runner/k6/script-qa.js
+k6 run -e BASE_URL=http://127.0.0.1:8090 -e STAGE_PLAN='x3:20tps:3:1' -e TIME_SCALE=3 -e RESULTS_DIR=runner/k6/results runner/k6/script-qa.js
 ```
 
 ## 階段切換事件

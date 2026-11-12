@@ -15,12 +15,13 @@ TH = {"faq": 8000, "business": 2000, "pct": 95, "fail_rate": 0.005}
 
 
 def qa(ts, failed, flow, stage="qa", phase="hold"):
-    return row(ts, 1 if failed else 0, tags=f"flow={flow}&case=X&stage={stage}&phase={phase}", metric="qa_failed")
+    metric = "qa_opening_failed" if flow == "init" else "qa_failed"
+    return row(ts, 1 if failed else 0, tags=f"flow={flow}&case=X&stage={stage}&phase={phase}", metric=metric)
 
 
 class QaReportTest(unittest.TestCase):
     def build(self, text):
-        c = aggregate.Collector(extra_metrics=(qa_report.QA_METRIC,))
+        c = aggregate.Collector(extra_metrics=qa_report.EXTRA_METRICS)
         c.add_task("task-000", [gzip.compress(text.encode())])
         result = aggregate.compute(c, ["qa"])
         return c, result, qa_report.compute(c, result, TH, ["qa"])
@@ -35,7 +36,9 @@ class QaReportTest(unittest.TestCase):
                 + row(t + 100, 9000, tags=tags_faq) + qa(t + 100, True, "faq")
                 + row(t + 200, 1000, tags=tags_biz) + qa(t + 200, False, "business")
                 + row(t + 300, 500, status="429", expected="false", tags=tags_biz) + qa(t + 300, True, "business")
-                + row(t + 400, 800, tags="flow=faq&case=B2&stage=qa&phase=ramp") + qa(t + 400, False, "faq", phase="ramp"))
+                + row(t + 400, 800, tags="flow=faq&case=B2&stage=qa&phase=ramp") + qa(t + 400, False, "faq", phase="ramp")
+                # 開場問候：失敗、很慢，但不計入對話統計
+                + row(t + 500, 30000, tags="flow=init&case=B1&stage=qa&phase=hold") + qa(t + 500, True, "init"))
         c, result, r = self.build(text)
         self.assertTrue(qa_report.has_data(c))
         a = r["overall"]["all"]
@@ -44,6 +47,8 @@ class QaReportTest(unittest.TestCase):
         # 階段判定只算持續期間
         st = r["stages"][0]
         self.assertEqual(st["flows"]["all"]["total"], 4)
+        self.assertEqual(st["flows"]["all"]["count"], 4)  # 回應時間也不含開場問候
+        self.assertEqual((st["flows"]["init"]["total"], st["flows"]["init"]["failed"]), (1, 1))
         self.assertEqual(st["flows"]["faq"]["count"], 2)
         self.assertAlmostEqual(st["flows"]["faq"]["within"], 0.5)
         names = {name: ok for name, _, _, ok in st["checks"]}
@@ -52,7 +57,7 @@ class QaReportTest(unittest.TestCase):
         self.assertIn("對話失敗率", page)
 
     def test_no_qa_metric_means_no_qa_report(self):
-        c = aggregate.Collector(extra_metrics=(qa_report.QA_METRIC,))
+        c = aggregate.Collector(extra_metrics=qa_report.EXTRA_METRICS)
         c.add_task("task-000", [gzip.compress((HEADER + row(1000000000000, 100)).encode())])
         self.assertFalse(qa_report.has_data(c))
 

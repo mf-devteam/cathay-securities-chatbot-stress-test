@@ -1,7 +1,8 @@
 """對話回應時間測試（k6 script-qa.js）的報告：以「一問一答」為單位看回應時間與失敗率。
 
-- 對話＝一次聊天 API（/api/chat/ask）的一問一答；開場問候也是一則對話（只觀察，不設回應時間門檻）
-- 回應時間：k6 http_req_duration（送出到收完回應，含 AI 生成時間），依 flow 分 FAQ／業務查詢／開場問候
+- 對話＝使用者提問的一問一答（一次聊天 API /api/chat/ask）
+- 開場問候不計入對話統計（客戶 2026-11-12 回覆），只單獨列出（qa_opening_failed），不設門檻
+- 回應時間：k6 http_req_duration（送出到收完回應，含 AI 生成時間），依 flow 分 FAQ／業務查詢
 - 失敗率＝對話失敗筆數 ÷ 對話總筆數：k6 腳本寫的 qa_failed（回應不是預期結果＝5xx、timeout、429、業務錯誤）
 - 判定只看持續期間（不含爬升）；「整輪」含爬升
 
@@ -18,8 +19,10 @@ from aggregate import percentile
 from render import COLORS, STAGE_NAMES, _page, e, fmt_n, fmt_pct, fmt_rate, fmt_s, line_chart, mark, note, task_table
 
 QA_METRIC = "qa_failed"
+OPENING_METRIC = "qa_opening_failed"
+EXTRA_METRICS = (QA_METRIC, OPENING_METRIC)
 FLOWS = ("faq", "business", "init")
-FLOW_NAMES = {"all": "全部對話", "faq": "FAQ 問答", "business": "業務查詢", "init": "開場問候"}
+FLOW_NAMES = {"all": "全部對話", "faq": "FAQ 問答", "business": "業務查詢", "init": "開場問候（不計入）"}
 
 
 def thresholds_from_env(default_fail_rate: float) -> dict:
@@ -37,7 +40,7 @@ def thresholds_from_env(default_fail_rate: float) -> dict:
 
 
 def has_data(c: aggregate.Collector) -> bool:
-    return bool(c.extra.get(QA_METRIC))
+    return bool(c.extra.get(QA_METRIC) or c.extra.get(OPENING_METRIC))
 
 
 def _latency(durs, limit, pct):
@@ -72,25 +75,28 @@ def compute(c: aggregate.Collector, result: dict, th: dict, stage_order: list[st
         if fl not in FLOWS:
             continue
         d = c.dur[i]
-        keys = [("all", fl), ("all", "all")]
+        counted = fl != "init"  # 開場問候不計入「全部對話」
+        keys = [("all", fl)] + ([("all", "all")] if counted else [])
         if phases[c.phase[i]] == "hold":
             st = stages[c.stage[i]]
-            keys += [(st, fl), (st, "all")]
+            keys += [(st, fl)] + ([(st, "all")] if counted else [])
         for k in keys:
             durs.setdefault(k, array("d")).append(d)
         b = int((c.ts[i] - t0) / 1000.0 // bucket_s)
         if 0 <= b < nb:
             b_durs[fl][b].append(d)
 
-    # 失敗：qa_failed（1＝失敗）
+    # 失敗：qa_failed（使用者提問）、qa_opening_failed（開場問候，只單獨列出）；1＝失敗
     fails: dict[tuple[str, str], list[int]] = {}
-    b_total, b_fail = [0] * nb, [0] * nb
+    b_total, b_fail, b_opening = [0] * nb, [0] * nb, [0] * nb
     seen_stages = []
-    for ts, value, fl, st, ph in c.extra.get(QA_METRIC, []):
+    samples = [(r, False) for r in c.extra.get(QA_METRIC, [])] + [(r, True) for r in c.extra.get(OPENING_METRIC, [])]
+    for (ts, value, fl, st, ph), opening in samples:
         failed = 1 if value >= 0.5 else 0
-        keys = [("all", fl), ("all", "all")]
+        fl = "init" if opening else fl
+        keys = [("all", fl)] + ([] if opening else [("all", "all")])
         if ph == "hold":
-            keys += [(st, fl), (st, "all")]
+            keys += [(st, fl)] + ([] if opening else [(st, "all")])
             if st not in seen_stages:
                 seen_stages.append(st)
         for k in keys:
@@ -99,8 +105,11 @@ def compute(c: aggregate.Collector, result: dict, th: dict, stage_order: list[st
             f[1] += failed
         b = int((ts - t0) / 1000.0 // bucket_s)
         if 0 <= b < nb:
-            b_total[b] += 1
-            b_fail[b] += failed
+            if opening:
+                b_opening[b] += 1
+            else:
+                b_total[b] += 1
+                b_fail[b] += failed
 
     def summary(scope, fl, secs):
         lat = _latency(durs.get((scope, fl), ()), limits.get(fl), pct)
@@ -124,6 +133,7 @@ def compute(c: aggregate.Collector, result: dict, th: dict, stage_order: list[st
     series = {
         "t": result["series"]["t"],
         "tps": [x / bucket_s for x in b_total],
+        "chat_tps": [(b_total[b] + b_opening[b]) / bucket_s for b in range(nb)],
         "fail_rate": [(b_fail[b] / b_total[b]) if b_total[b] else None for b in range(nb)],
         "lat": {fl: [percentile(sorted(v), pct) for v in b_durs[fl]] for fl in FLOWS},
     }
@@ -158,7 +168,7 @@ def _verdict(checks):
 
 def _stage_table(stage_rows, th):
     key = f"p{th['pct']:g}"
-    head = (f"<tr><th>階段</th><th>每秒對話<br>（TPS）</th><th>對話總筆數</th><th>失敗筆數</th><th>失敗率</th>"
+    head = (f"<tr><th>階段</th><th>每秒對話<br>（不含開場問候）</th><th>對話總筆數</th><th>失敗筆數</th><th>失敗率</th>"
             f"<th>FAQ {key}</th><th>業務 {key}</th><th>判定</th></tr>")
     rows = []
     for st in stage_rows:
@@ -215,19 +225,23 @@ def render(qa: dict, result: dict, *, run_id: str, title: str, th: dict, generat
         warn_html += f'<p class="warn">壓測機來不及送出新對話（dropped_iterations）共 {dropped:,.0f} 次：實際送出的負載低於設定，需增加 QA_MAX_VUS 或 runner。</p>'
 
     kpis = f"""<div class="kpis">
-<div class="kpi"><div>對話總筆數</div><b>{fmt_n(a.get('total'))}</b></div>
+<div class="kpi"><div>對話總筆數（不含開場問候）</div><b>{fmt_n(a.get('total'))}</b></div>
 <div class="kpi"><div>對話失敗筆數</div><b>{fmt_n(a.get('failed'))}</b></div>
 <div class="kpi"><div>失敗率</div><b>{fmt_pct(a.get('fail_rate'))}</b></div>
 <div class="kpi"><div>FAQ 問答 {key}</div><b>{fmt_s(ov.get('faq', {}).get('judged'))} 秒</b></div>
 <div class="kpi"><div>業務查詢 {key}</div><b>{fmt_s(ov.get('business', {}).get('judged'))} 秒</b></div>
-<div class="kpi"><div>平均每秒對話</div><b>{fmt_rate(a.get('tps'))}</b></div>
+<div class="kpi"><div>平均每秒對話（不含開場問候）</div><b>{fmt_rate(a.get('tps'))}</b></div>
 <div class="kpi"><div>資料時間長度</div><b>{result['duration_s'] / 60:.1f} 分</b></div>
 </div>"""
 
     charts = [
-        line_chart(s["t"], [("每秒對話（TPS）", COLORS["sent"], s["tps"])], bands, title="① 每秒對話數（一問一答）", y_label="筆／秒",
+        line_chart(s["t"], [("聊天 API 合計（TPS，含開場問候）", COLORS["sent"], s["chat_tps"]),
+                            ("使用者提問（計入對話統計）", COLORS["success"], s["tps"], True)],
+                   bands, title="① 每秒對話數（一問一答）", y_label="筆／秒",
                    y_fmt=lambda v: f"{v:,.0f}" if v >= 10 else f"{v:.1f}"),
-        note("壓測機每秒送出的對話（一問一答）筆數。先在爬升期間（淺色）拉到目標，之後在持續期間（深色）維持固定負載。"),
+        note("藍線是壓測機每秒送出的聊天 API 請求數，也就是設定的 TPS（與地端規劃的 TPS 定義相同，含開場問候）；"
+             "綠色虛線是其中使用者提問的部分，也就是計入對話統計的對話（約佔 9 成）。"
+             "先在爬升期間（淺色）拉到目標，之後在持續期間（深色）維持固定負載。"),
         line_chart(s["t"], [(f"FAQ 問答 {key}", COLORS["faq"], [sec(v) for v in s["lat"]["faq"]]),
                             (f"業務查詢 {key}", COLORS["business"], [sec(v) for v in s["lat"]["business"]]),
                             (f"開場問候 {key}", COLORS["vus"], [sec(v) for v in s["lat"]["init"]], True)],
@@ -235,7 +249,7 @@ def render(qa: dict, result: dict, *, run_id: str, title: str, th: dict, generat
                    refs=[(th["faq"] / 1000, f"FAQ 門檻 {th['faq'] / 1000:g} 秒", COLORS["faq"]),
                          (th["business"] / 1000, f"業務門檻 {th['business'] / 1000:g} 秒", COLORS["business"])]),
         note(f"回應時間＝使用者送出問題到收完回覆（含 AI 生成時間）。{key} 是 {th['pct']:g}% 的對話在這個時間內完成。"
-             "線在同色虛線以下代表符合門檻；開場問候只觀察。"),
+             "線在同色虛線以下代表符合門檻；開場問候只觀察，不計入統計。"),
         line_chart(s["t"], [("失敗率", COLORS["err"], [None if v is None else v * 100 for v in s["fail_rate"]])],
                    bands, title="③ 對話失敗率", y_label="%", y_fmt=lambda v: f"{v:.1f}",
                    refs=[(th["fail_rate"] * 100, f"門檻 {th['fail_rate'] * 100:g}%", COLORS["ref"])]),
@@ -245,15 +259,20 @@ def render(qa: dict, result: dict, *, run_id: str, title: str, th: dict, generat
 
     detail_rows = [(STAGE_NAMES.get(st["stage"], st["stage"]), st["flows"]) for st in qa["stages"]]
     detail_rows.append(("整輪（含爬升）", ov))
+    opening = ov.get("init")
+    opening_html = ("" if not opening else note(
+        f"開場問候（訪客進入聊天時系統自動回覆的招呼語）照真實訪客流程送出，但不計入對話總筆數、失敗率與判定，只在明細單獨列出供參考："
+        f"共 {fmt_n(opening['total'])} 則，失敗 {fmt_n(opening['failed'])} 則，{key} {fmt_s(opening['judged'])} 秒。"))
 
     body = f"""
 {warn_html}
 <h2>總覽</h2>
 {kpis}
-{note(f"這份報告以「對話」（一問一答＝一次聊天 API）為單位。回應時間門檻：FAQ 問答 {key} ≤ {th['faq'] / 1000:g} 秒（含 AI 思考時間）、"
+{note(f"這份報告以「對話」（使用者提問的一問一答＝一次聊天 API）為單位，不含開場問候。回應時間門檻：FAQ 問答 {key} ≤ {th['faq'] / 1000:g} 秒（含 AI 思考時間）、"
       f"業務查詢 {key} ≤ {th['business'] / 1000:g} 秒；失敗率門檻 ≤ {th['fail_rate'] * 100:g}%。"
       "原本以請求為單位、5xx＋timeout 為錯誤率的報告仍另外產生（latest.html）。")}
 {_check_table(qa['checks'])}
+{opening_html}
 
 <h2>各階段判定（只計持續期間，不含爬升）</h2>
 {_stage_table(qa['stages'], th)}

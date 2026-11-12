@@ -116,7 +116,8 @@ menu() {
     echo "   5) 停止壓測"
     echo "   6) 產生報表"
     echo "   7) 打包問題資料      （有問題時，把產生的檔案寄給${CONTACT}）"
-    echo "   8) 對話回應時間測試  （1 分鐘爬升到 $(qa_peak_tps) TPS 後固定負載，約 $(stage_minutes full "$QA_STAGE_PLAN") 分鐘）"
+    echo "   8) 對話回應時間測試 1 倍（$(qa_peak_tps "$QA_STAGE_PLAN_X1") TPS，約 $(stage_minutes full "$QA_STAGE_PLAN_X1") 分鐘）"
+    echo "   9) 對話回應時間測試 3 倍（$(qa_peak_tps "$QA_STAGE_PLAN") TPS，約 $(stage_minutes full "$QA_STAGE_PLAN") 分鐘）"
     echo "   0) 離開"
     line
 }
@@ -132,9 +133,9 @@ stage_minutes() { # stage_minutes smoke|full [STAGE_PLAN]：依目前設定估�
     echo $((t + 1))
 }
 
-qa_peak_tps() { # 對話回應時間測試的最高 TPS（QA_STAGE_PLAN 各階段的最大值）
+qa_peak_tps() { # qa_peak_tps <STAGE_PLAN>：對話回應時間測試的最高 TPS（各階段的最大值）
     local entry id load max=0
-    IFS=';' read -r -a entries <<< "$QA_STAGE_PLAN"
+    IFS=';' read -r -a entries <<< "$1"
     for entry in "${entries[@]}"; do
         IFS=':' read -r id load _ <<< "$entry"
         load="${load%tps}"
@@ -181,8 +182,8 @@ next_run_id() { # 今天的第幾輪：20261105-01、20261105-smoke-01
     printf '%s-%02d' "$prefix" "$n"
 }
 
-do_start() { # do_start smoke|full|qa
-    local kind="$1" run rc=0 run_id args=()
+do_start() { # do_start smoke|full|qa1|qa3
+    local kind="$1" run rc=0 run_id plan="" args=()
     run="$(latest_run)"
     run_state "$run" || rc=$?
     if [ "$rc" -eq 1 ]; then
@@ -193,10 +194,11 @@ do_start() { # do_start smoke|full|qa
         run_id="$(next_run_id smoke)"; args=(STAGE_SCOPE=smoke)
         echo
         echo "  ${B}試跑${N}：只跑第一階段（低流量），確認整個流程正常。"
-    elif [ "$kind" = qa ]; then
-        run_id="$(next_run_id qa)"; args=(TEST_TYPE=qa)
+    elif [ "$kind" = qa1 ] || [ "$kind" = qa3 ]; then
+        if [ "$kind" = qa1 ]; then plan="$QA_STAGE_PLAN_X1"; else plan="$QA_STAGE_PLAN"; fi
+        run_id="$(next_run_id "$kind")"; args=(TEST_TYPE=qa "STAGE_PLAN=${plan}")
         echo
-        echo "  ${B}對話回應時間測試${N}：1 分鐘內爬升到 $(qa_peak_tps) TPS，之後固定負載到結束。"
+        echo "  ${B}對話回應時間測試（${kind#qa} 倍）${N}：1 分鐘內爬升到 $(qa_peak_tps "$plan") TPS，之後固定負載到結束（不會自動停止）。"
         echo "  以一問一答為單位看回應時間（FAQ ≤ $((QA_FAQ_MAX_MS / 1000)) 秒、業務查詢 ≤ $((QA_BUSINESS_MAX_MS / 1000)) 秒）與失敗率。"
         warn "請確認：已先試跑成功、受測端負責人已同意、監控人員已就位。"
     else
@@ -207,13 +209,13 @@ do_start() { # do_start smoke|full|qa
     fi
     echo "  壓測編號：${run_id}"
     echo "  受測端　：${BASE_URL}"
-    if [ "$kind" = qa ]; then
-        echo "  預計時間：約 $(stage_minutes full "$QA_STAGE_PLAN") 分鐘"
+    if [ -n "${plan:-}" ]; then
+        echo "  預計時間：約 $(stage_minutes full "$plan") 分鐘"
     else
         echo "  預計時間：約 $(stage_minutes "$kind") 分鐘"
     fi
     confirm "即將開始壓測。" || { pause; return; }
-    [ "$kind" != smoke ] && { confirm "再確認一次：開始$([ "$kind" = qa ] && echo 對話回應時間測試 || echo 正式壓測)？" || { pause; return; }; }
+    [ "$kind" != smoke ] && { confirm "再確認一次：開始$([ -n "${plan:-}" ] && echo 對話回應時間測試 || echo 正式壓測)？" || { pause; return; }; }
     echo
     if ! "$K6CTL" start "$run_id" "${args[@]}" --yes; then
         echo; bad "啟動失敗。請選 7 打包問題資料，把檔案寄給${CONTACT}。"
@@ -350,7 +352,8 @@ while true; do
         5) do_stop ;;
         6) do_report ;;
         7) do_support ;;
-        8) do_start qa ;;
+        8) do_start qa1 ;;
+        9) do_start qa3 ;;
         0|q|Q) echo; exit 0 ;;
         *) ;;
     esac

@@ -4,7 +4,7 @@
 #   k6ctl check                      檢查 SSH、k6 版本、nofile、時間差（裝好 VM 後先跑一次）
 #   k6ctl preflight                  連線預檢：control 與每台 runner 各跑一次 k6-preflight，報告存到 preflight/
 #   k6ctl start <RUN_ID> [K=V ...]   同步程式與參數到 runner，同時啟動（K=V 只覆蓋這一輪，例如 STAGE_SCOPE=smoke）
-#                                    對話回應時間測試：k6ctl start <RUN_ID> TEST_TYPE=qa（負載用 QA_STAGE_PLAN；或用 k6menu 8）
+#                                    對話回應時間測試：k6ctl start <RUN_ID> TEST_TYPE=qa（3 倍，負載用 QA_STAGE_PLAN；1 倍加 STAGE_PLAN=x1:118tps:10:1；或 k6menu 8／9）
 #   k6ctl status [RUN_ID]            以 PID 判斷每台 runner 是否跑完；exit code 區分正常結束或中止
 #   k6ctl wait [RUN_ID]              每分鐘檢查一次，全部結束後自動 collect + report
 #   k6ctl stop [RUN_ID]              全部 runner 一起停止（k6 會收尾並寫出摘要）

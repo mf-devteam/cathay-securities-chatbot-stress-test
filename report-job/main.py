@@ -57,7 +57,7 @@ def main() -> int:
     raw_files = [f for f in store.list("raw") if f.endswith(".csv.gz")]
     print(f"[report] {args.source}：找到 {len(raw_files)} 個 raw 檔", flush=True)
 
-    collector = aggregate.Collector(extra_metrics=(qa_report.QA_METRIC,))
+    collector = aggregate.Collector(extra_metrics=qa_report.EXTRA_METRICS)
     warnings: list[str] = []
     for rel in raw_files:
         task = rel.rsplit("/", 1)[-1].removesuffix(".csv.gz")
