@@ -1,0 +1,486 @@
+#!/usr/bin/env bash
+# v3 分開測試（客戶 2026-11-13 確認）的串接，在 control 背景執行：
+#   腳本 A 業務查詢 → 休息 V3_GAP_MIN 分鐘 → 腳本 B FAQ 問答 → 合併報表（一份 HTML，A、B 分區）
+# 通常由 k6menu 操作；指令：
+#   k6suite start <smoke|x1|x3> [--abort|--no-abort]   背景開始一組測試，立即返回（關閉視窗、斷線都不影響）
+#   k6suite progress [SUITE_ID]                        目前做到哪（k6menu 的進度畫面）
+#   k6suite stop [SUITE_ID]                            整組停止（A、B 都不再跑），仍會用停止前的數據產生報表
+#   k6suite report [SUITE_ID]                          重新產生合併報表
+#   k6suite running                                    有執行中的一組時印出 SUITE_ID（回傳 0），否則回傳 1
+#   k6suite list                                       列出所有測試編號
+# SUITE_ID 省略時用最近一組。資料：/var/lib/k6-stress/suites/<SUITE_ID>/（A、B 各自的原始數據在 runs/<SUITE_ID>-A、-B）
+# 參數：defaults.env 的 V3_*（負載、門檻、休息時間）。以 k6 帳號執行；其他帳號執行時會自動 sudo -u k6。
+set -uo pipefail
+
+APP_DIR="${APP_DIR:-/opt/k6-stress}"
+DATA_DIR="${DATA_DIR:-/var/lib/k6-stress}"
+CONF_FILE="${CONF_FILE:-/etc/k6-stress/stress.env}"
+K6_USER="${K6_USER:-k6}"
+K6CTL="${K6CTL:-${APP_DIR}/onprem/bin/k6ctl}"
+SUITES="${DATA_DIR}/suites"
+POLL_S="${SUITE_POLL_S:-15}"
+
+if [ "$(id -un)" != "$K6_USER" ] && [ -z "${K6CTL_NO_SUDO:-}" ]; then
+    exec sudo -u "$K6_USER" -H "$0" "$@"
+fi
+
+die() { echo "k6suite：$*" >&2; exit 1; }
+log() { echo "[k6suite] $(date '+%Y-%m-%d %H:%M:%S') $*"; }
+
+load_config() {
+    set -a
+    # shellcheck disable=SC1091
+    . "${APP_DIR}/onprem/config/defaults.env"
+    # shellcheck disable=SC1090
+    [ -f "$CONF_FILE" ] && . "$CONF_FILE"
+    set +a
+}
+
+part_name() { case "$1" in A) echo "腳本 A 業務查詢" ;; B) echo "腳本 B FAQ 問答" ;; esac; }
+kind_name() { case "$1" in smoke) echo "試跑 A→B" ;; x1) echo "正式測試 1 倍" ;; x3) echo "正式測試 3 倍" ;; *) echo "$1" ;; esac; }
+
+# ---------- 測試計畫 ----------
+plan_for() { # plan_for <kind> <A|B>
+    case "$1" in
+        smoke) echo "${V3_PLAN_SMOKE:?defaults.env 缺少 V3_PLAN_SMOKE}" ;;
+        x1) [ "$2" = A ] && echo "${V3_PLAN_X1_A:?}" || echo "${V3_PLAN_X1_B:?}" ;;
+        x3) [ "$2" = A ] && echo "${V3_PLAN_X3_A:?}" || echo "${V3_PLAN_X3_B:?}" ;;
+        *) return 1 ;;
+    esac
+}
+
+plan_seconds() { # plan_seconds <STAGE_PLAN>：爬升＋持續的秒數
+    local entry id load hold ramp t=0
+    IFS=';' read -r -a entries <<< "$1"
+    for entry in "${entries[@]}"; do
+        IFS=':' read -r id load hold ramp <<< "$entry"
+        t=$(awk -v t="$t" -v h="${hold:-0}" -v r="${ramp:-0}" 'BEGIN { printf "%d", t + (h + r) * 60 }')
+    done
+    echo "$t"
+}
+
+plan_peak_tps() { # plan_peak_tps <STAGE_PLAN>
+    local entry id load max=0
+    IFS=';' read -r -a entries <<< "$1"
+    for entry in "${entries[@]}"; do
+        IFS=':' read -r id load _ <<< "$entry"
+        load="${load%tps}"
+        awk -v a="$load" -v b="$max" 'BEGIN { exit !(a > b) }' && max="$load"
+    done
+    echo "$max"
+}
+
+# 每支腳本預估的秒數：爬升＋持續＋收尾約 1 分鐘（啟動、gracefulStop、收回數據）
+part_estimate_s() { echo $(( $(plan_seconds "$1") + 60 )); }
+REPORT_ESTIMATE_S=120
+
+# 目前在哪個階段：stage_at <STAGE_PLAN> <已經過秒數> → 「爬升中 → 354 TPS」／「固定負載 354 TPS」／「收尾中」
+stage_at() {
+    local entry id load hold ramp t=0 e="$2" r h
+    IFS=';' read -r -a entries <<< "$1"
+    for entry in "${entries[@]}"; do
+        IFS=':' read -r id load hold ramp <<< "$entry"
+        r=$(awk -v m="${ramp:-0}" 'BEGIN { printf "%d", m * 60 }')
+        h=$(awk -v m="${hold:-0}" 'BEGIN { printf "%d", m * 60 }')
+        if [ "$e" -lt $((t + r)) ]; then echo "爬升中 → ${load%tps} TPS"; return; fi
+        if [ "$e" -lt $((t + r + h)) ]; then echo "固定負載 ${load%tps} TPS"; return; fi
+        t=$((t + r + h))
+    done
+    echo "收尾中（收回數據）"
+}
+
+# ---------- 每組測試的狀態檔 ----------
+suite_dir() { echo "${SUITES}/$1"; }
+
+latest_suite() { ls -1t "$SUITES" 2>/dev/null | head -1; }
+
+resolve() { # resolve [SUITE_ID]：設定 SUITE_ID、SDIR
+    SUITE_ID="${1:-$(latest_suite)}"
+    [ -n "$SUITE_ID" ] || die "還沒有任何 v3 測試紀錄"
+    SDIR="$(suite_dir "$SUITE_ID")"
+    [ -f "${SDIR}/suite.env" ] || die "找不到測試編號 ${SUITE_ID}（k6suite list）"
+}
+
+load_suite() { # 讀入 suite.env（固定）與 state.env（進度）
+    # shellcheck disable=SC1090,SC1091
+    . "${SDIR}/suite.env"
+    PHASE="" FINAL="" A_START="" A_END="" A_REASON="" B_START="" B_END="" B_REASON="" GAP_START="" REPORT_START="" REPORT="" DONE_AT="" MESSAGE=""
+    # shellcheck disable=SC1090,SC1091
+    [ -f "${SDIR}/state.env" ] && . "${SDIR}/state.env"
+}
+
+set_state() { # set_state KEY VALUE [KEY VALUE …]：整檔重寫再改名，讀取端不會讀到一半
+    local tmp="${SDIR}/.state.tmp" k
+    [ -f "${SDIR}/state.env" ] && cp "${SDIR}/state.env" "$tmp" || : > "$tmp"
+    while [ $# -ge 2 ]; do
+        k="$1"
+        grep -v "^${k}=" "$tmp" > "${tmp}.2"; mv "${tmp}.2" "$tmp"
+        printf '%s=%q\n' "$k" "$2" >> "$tmp"
+        shift 2
+    done
+    mv "$tmp" "${SDIR}/state.env"
+}
+
+orchestrator_alive() {
+    local pid
+    grep -q '^PHASE=done$' "${SDIR}/state.env" 2>/dev/null && return 1
+    pid="$(cat "${SDIR}/orchestrator.pid" 2>/dev/null)" || return 1
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+    # 已結束但還沒被回收（zombie）的不算
+    [ "$(ps -o stat= -p "$pid" 2>/dev/null | cut -c1)" != Z ]
+}
+
+# 有執行中的一組測試時印出 SUITE_ID
+cmd_running() {
+    local id
+    for id in $(ls -1t "$SUITES" 2>/dev/null); do
+        SDIR="$(suite_dir "$id")"
+        [ -f "${SDIR}/state.env" ] || continue
+        if orchestrator_alive; then echo "$id"; return 0; fi
+    done
+    return 1
+}
+
+stop_requested() { [ -f "${SDIR}/stop-requested" ]; }
+
+# ---------- 開始 ----------
+next_suite_id() { # 今天的第幾組：20261113-v3x3-01（runs 底下 A、B 分別為 -A、-B）
+    local prefix n=1
+    prefix="$(date +%Y%m%d)-v3$1"
+    while [ -e "${SUITES}/$(printf '%s-%02d' "$prefix" "$n")" ] || [ -e "${DATA_DIR}/runs/$(printf '%s-%02d' "$prefix" "$n")-A" ]; do
+        n=$((n + 1))
+    done
+    printf '%s-%02d' "$prefix" "$n"
+}
+
+cmd_start() {
+    local kind="" abort="" arg running_run
+    for arg in "$@"; do
+        case "$arg" in
+            smoke|x1|x3) kind="$arg" ;;
+            --abort) abort=true ;;
+            --no-abort) abort=false ;;
+            *) die "用法：k6suite start <smoke|x1|x3> [--abort|--no-abort]" ;;
+        esac
+    done
+    [ -n "$kind" ] || die "用法：k6suite start <smoke|x1|x3> [--abort|--no-abort]"
+    load_config
+    abort="${abort:-${V3_ABORT_DEFAULT:-false}}"
+    mkdir -p "$SUITES"
+    if running_run="$(cmd_running)"; then die "${running_run} 還在執行中，同時只能有一組測試"; fi
+    # 舊版測試（k6ctl start）執行中也不能開始
+    running_run="$(ls -1t "${DATA_DIR}/runs" 2>/dev/null | head -1)"
+    if [ -n "$running_run" ] && [ -f "${DATA_DIR}/runs/${running_run}/runners.txt" ]; then
+        "$K6CTL" status "$running_run" > /dev/null 2>&1
+        [ $? -ne 1 ] || die "${running_run} 還在執行中，同時只能有一輪壓測"
+    fi
+
+    SUITE_ID="$(next_suite_id "$kind")"
+    SDIR="$(suite_dir "$SUITE_ID")"
+    mkdir -p "${SDIR}/reports"
+    {
+        echo "# k6suite start $(date -Iseconds) by ${SUDO_USER:-$(id -un)}"
+        printf '%s=%q\n' SUITE_ID "$SUITE_ID" KIND "$kind" CREATED "$(date +%s)" \
+            PLAN_A "$(plan_for "$kind" A)" PLAN_B "$(plan_for "$kind" B)" GAP_MIN "${V3_GAP_MIN:-2}" ABORT "$abort" \
+            RUN_A "${SUITE_ID}-A" RUN_B "${SUITE_ID}-B" \
+            WEIGHTS_A "${V3_A_WEIGHTS:?}" WEIGHTS_B "${V3_B_WEIGHTS:?}" A_MAX_MS "${V3_A_MAX_MS:?}" B_MAX_MS "${V3_B_MAX_MS:?}" \
+            LATENCY_PCT "${V3_LATENCY_PCT:?}" FAIL_RATE "${V3_FAIL_RATE:?}" \
+            ABORT_FAIL_RATE "${V3_ABORT_FAIL_RATE:?}" ABORT_DELAY "${V3_ABORT_DELAY:?}" \
+            TARGET "${BASE_URL:-}" RUNNER_COUNT "$(tr ';' '\n' <<< "${RUNNERS:-}" | sed '/^$/d' | wc -l | tr -d ' ')"
+    } > "${SDIR}/suite.env"
+    set_state PHASE starting
+    setsid nohup "$0" _run "$SUITE_ID" > "${SDIR}/orchestrator.log" 2>&1 < /dev/null &
+    echo $! > "${SDIR}/orchestrator.pid"
+    echo "$SUITE_ID"
+}
+
+# ---------- 背景串接（_run） ----------
+part_overrides() { # part_overrides <A|B>：傳給 k6ctl start 的本輪參數
+    local p="$1" plan weights
+    if [ "$p" = A ]; then plan="$PLAN_A"; weights="$WEIGHTS_A"; else plan="$PLAN_B"; weights="$WEIGHTS_B"; fi
+    # 參數以開始時的 suite.env 為準（中途改設定檔不影響這一組）
+    # QA_*：讓 k6ctl report 另外產生的單支報表（qa-latest.html）與 v3 的門檻一致
+    printf '%s\n' "TEST_TYPE=v3$(tr 'AB' 'ab' <<< "$p")" "STAGE_PLAN=${plan}" "STAGE_SCOPE=full" "SCENARIO_WEIGHTS=${weights}" \
+        "V3_A_MAX_MS=${A_MAX_MS}" "V3_B_MAX_MS=${B_MAX_MS}" "V3_LATENCY_PCT=${LATENCY_PCT}" "V3_FAIL_RATE=${FAIL_RATE}" \
+        "V3_ABORT=${ABORT}" "V3_ABORT_FAIL_RATE=${ABORT_FAIL_RATE}" "V3_ABORT_DELAY=${ABORT_DELAY}" "SUITE_ID=${SUITE_ID}" \
+        "QA_BUSINESS_MAX_MS=${A_MAX_MS}" "QA_FAQ_MAX_MS=${B_MAX_MS}" "QA_FAIL_RATE=${FAIL_RATE}" "QA_LATENCY_PCT=${LATENCY_PCT}"
+}
+
+# 執行一支腳本並等它結束；結束原因寫進 state：completed／aborted（自動停止）／stopped（手動停止）／error／start_failed
+run_part() {
+    local p="$1" run rc reason codes overrides=()
+    if [ "$p" = A ]; then run="$RUN_A"; else run="$RUN_B"; fi
+    mapfile -t overrides < <(part_overrides "$p")
+    log "$(part_name "$p") 開始：${run}"
+    set_state PHASE "$p" "${p}_START" "$(date +%s)"
+    if ! "$K6CTL" start "$run" "${overrides[@]}" --yes; then
+        log "$(part_name "$p") 啟動失敗"
+        set_state "${p}_END" "$(date +%s)" "${p}_REASON" start_failed
+        return 1
+    fi
+    stop_requested && "$K6CTL" stop "$run"
+    while true; do
+        rc=0; "$K6CTL" status "$run" > /dev/null 2>&1 || rc=$?
+        [ "$rc" -eq 1 ] || break
+        sleep "$POLL_S"
+    done
+    "$K6CTL" collect "$run" || true
+    codes="$(cat "${DATA_DIR}/runs/${run}"/tasks/task-*/k6.exit 2>/dev/null | sort -u | tr '\n' ' ')"
+    if [ "$rc" -eq 2 ] || [ -z "$codes" ]; then reason=error
+    elif grep -qw 105 <<< "$codes" || stop_requested; then reason=stopped
+    elif grep -qs 'abortOnFail' "${DATA_DIR}/runs/${run}"/tasks/task-*/k6-console.log; then reason=aborted
+    elif grep -Eqv '^(0|99)$' <<< "$(tr ' ' '\n' <<< "$codes" | sed '/^$/d')"; then reason=error
+    else reason=completed; fi
+    log "$(part_name "$p") 結束：${reason}（k6 exit：${codes}）"
+    set_state "${p}_END" "$(date +%s)" "${p}_REASON" "$reason"
+}
+
+make_report() {
+    local py="${APP_DIR}/venv/bin/python3"
+    [ -x "$py" ] || py=python3
+    load_config
+    "$py" "${APP_DIR}/report-job/v3_report.py" --suite-dir "$SDIR" --runs-dir "${DATA_DIR}/runs" \
+        --title "${V3_REPORT_TITLE:-新阿發 對話回應時間測試報告}"
+}
+
+cmd_run() { # 背景執行，由 cmd_start 啟動
+    resolve "$1"
+    load_config
+    load_suite
+    trap 'set_state FINAL error MESSAGE "串接程式被中斷" PHASE done DONE_AT "$(date +%s)"; exit 1' TERM INT
+    log "開始 ${SUITE_ID}（$(kind_name "$KIND")）A=${PLAN_A} B=${PLAN_B} 休息 ${GAP_MIN} 分鐘 自動停止=${ABORT}"
+
+    if ! run_part A; then
+        set_state PHASE done FINAL error B_REASON skipped DONE_AT "$(date +%s)" MESSAGE "腳本 A 無法啟動，整組未執行（請看 orchestrator.log）"
+        return 1
+    fi
+
+    if stop_requested; then
+        set_state B_REASON skipped
+    else
+        log "休息 ${GAP_MIN} 分鐘"
+        set_state PHASE gap GAP_START "$(date +%s)"
+        local until=$(( $(date +%s) + $(awk -v m="$GAP_MIN" 'BEGIN { printf "%d", m * 60 }') ))
+        while [ "$(date +%s)" -lt "$until" ] && ! stop_requested; do sleep 5; done
+        if stop_requested; then
+            set_state B_REASON skipped
+        else
+            run_part B || set_state MESSAGE "腳本 B 無法啟動（請看 orchestrator.log）"
+        fi
+    fi
+
+    log "產生合併報表"
+    set_state PHASE report REPORT_START "$(date +%s)"
+    if make_report; then
+        set_state REPORT "${SDIR}/reports/report-${SUITE_ID}.html"
+    else
+        set_state MESSAGE "合併報表產生失敗（請看 orchestrator.log）"
+    fi
+    load_suite
+    local final=completed
+    stop_requested && final=stopped
+    [ -n "$REPORT" ] || final=error
+    case "${A_REASON}${B_REASON}" in *error*|*start_failed*) final=error ;; esac
+    set_state PHASE done FINAL "$final" DONE_AT "$(date +%s)"
+    log "完成（${final}）：${REPORT:-沒有報表}"
+}
+
+# ---------- 停止 ----------
+cmd_stop() {
+    resolve "${1:-}"
+    load_suite
+    if [ "$PHASE" = done ]; then echo "  ${SUITE_ID} 已經結束。"; return 0; fi
+    touch "${SDIR}/stop-requested"
+    case "$PHASE" in
+        A) "$K6CTL" stop "$RUN_A" ;;
+        B) "$K6CTL" stop "$RUN_B" ;;
+    esac
+    echo "  已送出停止：${SUITE_ID}（之後不會再跑下一支腳本；收尾約 1 分鐘後，用停止前的數據產生報表）"
+}
+
+# ---------- 報表 ----------
+cmd_report() {
+    resolve "${1:-}"
+    load_suite
+    "$K6CTL" collect "$RUN_A" > /dev/null 2>&1 || true
+    [ -f "${DATA_DIR}/runs/${RUN_B}/runners.txt" ] && { "$K6CTL" collect "$RUN_B" > /dev/null 2>&1 || true; }
+    make_report && echo "  報表：${SDIR}/reports/report-${SUITE_ID}.html"
+}
+
+# ---------- 進度（k6menu 顯示用） ----------
+G=''; R=''; Y=''; B=''; D=''; N=''
+color_on() { G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; B=$'\e[1m'; D=$'\e[2m'; N=$'\e[0m'; }
+
+mmss() { printf '%02d:%02d' $(($1 / 60)) $(($1 % 60)); }
+hhmm() { date -d "@$1" +%H:%M; }
+
+# 中文字佔兩格：依顯示寬度補空白，欄位才會對齊
+pad() { # pad <文字> <寬度>
+    local w
+    w="$(printf '%s' "$1" | LC_ALL=C.UTF-8 wc -L 2>/dev/null)" || w=${#1}
+    printf '%s%*s' "$1" $(( $2 - w > 0 ? $2 - w : 0 )) ''
+}
+
+item() { # item <1＝目前這一步> <項目> <狀態>
+    local mark="  "
+    [ "$1" = 1 ] && mark="${Y}${B}▶${N} "
+    printf '  %s%s  %s\n' "$mark" "$(pad "$2" 28)" "$3"
+}
+
+bar() { # bar <done> <total>
+    local w=20 n i out=""
+    n=$(( $2 > 0 ? $1 * w / $2 : 0 )); [ "$n" -gt "$w" ] && n=$w
+    for ((i = 0; i < w; i++)); do [ "$i" -lt "$n" ] && out+="█" || out+="░"; done
+    echo "$out"
+}
+
+reason_text() {
+    case "$1" in
+        completed) echo "${G}✓ 已完成${N}" ;;
+        aborted) echo "${Y}■ 自動停止（失敗率超過 $(awk -v r="${V3_ABORT_FAIL_RATE:-0.05}" 'BEGIN { printf "%g", r * 100 }')%）${N}" ;;
+        stopped) echo "${Y}■ 已手動停止${N}" ;;
+        skipped) echo "${D}– 未執行${N}" ;;
+        start_failed) echo "${R}✗ 無法啟動${N}" ;;
+        *) echo "${R}✗ 異常結束${N}" ;;
+    esac
+}
+
+verdict_line() { # 報表產生後的判定（reports/verdict.env，由 v3_report.py 寫出）
+    local p="$1" v
+    v="$(grep "^${p}_VERDICT=" "${SDIR}/reports/verdict.env" 2>/dev/null | cut -d= -f2)"
+    case "$v" in
+        pass) echo "${G}${B}通過${N}　$(grep "^${p}_TEXT=" "${SDIR}/reports/verdict.env" | cut -d= -f2-)" ;;
+        fail) echo "${R}${B}未通過${N}　$(grep "^${p}_TEXT=" "${SDIR}/reports/verdict.env" | cut -d= -f2-)" ;;
+        incomplete) echo "${Y}${B}未完成${N}　$(grep "^${p}_TEXT=" "${SDIR}/reports/verdict.env" | cut -d= -f2-)（停止前的數據）" ;;
+        nodata) echo "${D}未執行，沒有數據${N}" ;;
+    esac
+}
+
+cmd_progress() {
+    [ -t 1 ] && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ] && color_on
+    resolve "${1:-}"
+    load_config
+    load_suite
+    local now est_a est_b gap_s total_est start_at el p run plan est st line eta alive=true
+    now=$(date +%s)
+    est_a=$(part_estimate_s "$PLAN_A"); est_b=$(part_estimate_s "$PLAN_B")
+    gap_s=$(awk -v m="$GAP_MIN" 'BEGIN { printf "%d", m * 60 }')
+    total_est=$((est_a + gap_s + est_b + REPORT_ESTIMATE_S))
+    start_at="${A_START:-$CREATED}"
+    orchestrator_alive || alive=false
+
+    echo "  測試編號：${B}${SUITE_ID}${N}　$(kind_name "$KIND")　$(hhmm "$CREATED") 開始　自動停止：$([ "$ABORT" = true ] && echo 開啟 || echo 關閉)"
+    echo
+    # 依序：腳本 A、休息、腳本 B、報表；ETA 由目前進度往後推
+    local cursor="$now" a_line b_line
+    for p in A B; do
+        if [ "$p" = A ]; then run="$RUN_A"; plan="$PLAN_A"; est=$est_a; st="$A_START"; line="$A_REASON"
+        else run="$RUN_B"; plan="$PLAN_B"; est=$est_b; st="$B_START"; line="$B_REASON"; fi
+        local label; label="$(part_name "$p")（$(plan_peak_tps "$plan") TPS）"
+        if [ -n "$line" ]; then
+            local end_var="${p}_END"
+            if [ -n "${!end_var}" ] && [ -n "$st" ]; then
+                item 0 "$label" "$(reason_text "$line")　$(hhmm "$st")～$(hhmm "${!end_var}")"
+            else
+                item 0 "$label" "$(reason_text "$line")"
+            fi
+        elif [ "$PHASE" = "$p" ] && [ -n "$st" ]; then
+            el=$((now - st)); [ "$el" -lt 0 ] && el=0
+            item 1 "$label" "${Y}${B}執行中${N}　${B}$(stage_at "$plan" "$el")${N}"
+            item 0 "" "$(bar "$el" "$est") $(mmss "$el")／約 $(mmss "$est")"
+            cursor=$(( st + est > now ? st + est : now ))
+        elif stop_requested; then
+            item 0 "$label" "${D}– 不會執行（已送出停止）${N}"
+        else
+            if [ "$p" = B ] && [ "$PHASE" = gap ]; then
+                cursor=$(( GAP_START + gap_s ))
+            elif [ "$p" = B ]; then
+                cursor=$(( cursor + gap_s ))
+            fi
+            item 0 "$label" "${D}等待中（約 $(hhmm "$cursor") 開始）${N}"
+            cursor=$((cursor + est))
+        fi
+        if [ "$p" = A ]; then
+            if [ "$PHASE" = gap ]; then
+                el=$((now - GAP_START))
+                item 1 "休息 ${GAP_MIN} 分鐘" "${Y}${B}休息中${N}　剩 $(mmss $(( gap_s - el > 0 ? gap_s - el : 0 )))（讓 A 的影響消退，B 的數據才乾淨）"
+            elif [ -n "$B_START" ] || { [ -n "$GAP_START" ] && [ "$PHASE" != A ]; }; then
+                item 0 "休息 ${GAP_MIN} 分鐘" "${G}✓${N}"
+            elif [ -n "$B_REASON" ] || stop_requested; then
+                item 0 "休息 ${GAP_MIN} 分鐘" "${D}– 未執行${N}"
+            else
+                item 0 "休息 ${GAP_MIN} 分鐘" "${D}等待中${N}"
+            fi
+        fi
+    done
+    if [ "$PHASE" = report ]; then
+        item 1 "合併報表" "${Y}${B}產生中${N}（約 1～3 分鐘）"
+        cursor=$(( REPORT_START + REPORT_ESTIMATE_S > now ? REPORT_START + REPORT_ESTIMATE_S : now ))
+    elif [ "$PHASE" = done ]; then
+        item 0 "合併報表" "$([ -n "$REPORT" ] && echo "${G}✓ 已產生${N}" || echo "${R}✗ 未產生${N}")"
+    else
+        item 0 "合併報表" "${D}等待中${N}"
+        cursor=$((cursor + REPORT_ESTIMATE_S))
+    fi
+    echo
+    if [ "$PHASE" = done ]; then
+        case "$FINAL" in
+            completed) echo "  ${G}${B}整組測試已完成${N}（$(hhmm "$start_at")～$(hhmm "$DONE_AT")，共 $(( (DONE_AT - start_at + 59) / 60 )) 分鐘）" ;;
+            stopped) echo "  ${Y}${B}整組測試已停止${N}（$(hhmm "$DONE_AT")）" ;;
+            *) echo "  ${R}${B}整組測試異常結束${N}${MESSAGE:+：${MESSAGE}}" ;;
+        esac
+        if [ -f "${SDIR}/reports/verdict.env" ]; then
+            echo "    腳本 A 業務查詢：$(verdict_line A)"
+            echo "    腳本 B FAQ 問答：$(verdict_line B)"
+        fi
+        [ -n "$REPORT" ] && echo "  報表：${B}${REPORT}${N}"
+    elif ! $alive && [ "$PHASE" != starting ]; then
+        echo "  ${R}${B}串接程式已中止${N}（可能是 control 重新開機）。請選「停止測試」後再選「取得報表」。"
+    else
+        el=$((now - start_at)); [ "$el" -lt 0 ] && el=0
+        eta=$cursor
+        stop_requested && eta=$((now + 120))  # 停止後：收尾＋報表約 2 分鐘
+        echo "  整體：$(bar "$el" $((el + eta - now)))　已執行 $(( el / 60 )) 分鐘／約 $(( (el + eta - now + 59) / 60 )) 分鐘，預計 ${B}$(hhmm "$eta")${N} 完成"
+        stop_requested && echo "  ${Y}已送出停止，收尾後會用停止前的數據產生報表。${N}"
+        [ -n "$MESSAGE" ] && echo "  ${Y}${MESSAGE}${N}"
+    fi
+    return 0
+}
+
+# 一行摘要（k6menu 頁首）
+cmd_brief() {
+    resolve "${1:-}"
+    load_suite
+    case "$PHASE" in
+        starting) echo "啟動中" ;;
+        A) echo "目前：腳本 A 業務查詢執行中（1/2）" ;;
+        gap) echo "目前：A 已結束，休息中，接著跑腳本 B" ;;
+        B) echo "目前：腳本 B FAQ 問答執行中（2/2）" ;;
+        report) echo "目前：A、B 都已結束，正在產生合併報表" ;;
+        done) echo "已結束" ;;
+    esac
+}
+
+cmd_list() {
+    local id
+    for id in $(ls -1t "$SUITES" 2>/dev/null); do
+        SDIR="$(suite_dir "$id")"
+        load_suite 2>/dev/null || continue
+        printf '  %-24s %-14s %s  %s\n' "$id" "$(kind_name "$KIND")" "$(date -d "@$CREATED" '+%Y-%m-%d %H:%M')" "${FINAL:-執行中}"
+    done
+}
+
+cmd="${1:-help}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    start) cmd_start "$@" ;;
+    _run) cmd_run "$@" ;;
+    progress) cmd_progress "$@" ;;
+    brief) cmd_brief "$@" ;;
+    stop) cmd_stop "$@" ;;
+    report) cmd_report "$@" ;;
+    running) mkdir -p "$SUITES"; cmd_running ;;
+    list) cmd_list ;;
+    help|-h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
+    *) die "未知的指令：${cmd}（k6suite help）" ;;
+esac

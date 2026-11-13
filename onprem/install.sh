@@ -20,7 +20,7 @@
 #   全部   建立 k6 帳號、程式放到 /opt/k6-stress、rsync／curl／openssl／dig
 #          RHEL：SELinux 為 enforcing 時，設定 k6 帳號 .ssh 的 context（home 不在 /home，sshd 預設讀不到）
 #   runner k6（固定版本）、sysstat（sar）、OS 參數、允許 control 的 SSH 公鑰
-#   control 產生 SSH 金鑰、k6ctl 指令與 k6menu 操作選單、/etc/k6-stress/stress.env、python3-venv＋pandas／plotly（/opt/k6-stress/venv）
+#   control 產生 SSH 金鑰、k6ctl／k6suite 指令與 k6menu 操作選單、/etc/k6-stress/stress.env、python3-venv＋pandas／plotly（/opt/k6-stress/venv）
 #   mock   nodejs 與 k6-mock systemd 服務（port 8090）
 set -euo pipefail
 
@@ -284,6 +284,7 @@ setup_control() {
     fi
     ln -sf "${APP_DIR}/onprem/bin/k6ctl" /usr/local/bin/k6ctl
     ln -sf "${APP_DIR}/onprem/bin/k6menu" /usr/local/bin/k6menu
+    ln -sf "${APP_DIR}/onprem/bin/k6suite" /usr/local/bin/k6suite
     setup_control_ssh
     setup_selinux_ssh
     setup_report_venv

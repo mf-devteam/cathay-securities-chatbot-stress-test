@@ -45,8 +45,13 @@ supervise() {
     export RUN_ID TASK_INDEX="$INDEX" TASK_COUNT="$count"
     export OUTPUT_URI="${DATA_DIR}/runs" WORK_DIR="${DATA_DIR}/work/${RUN_ID}"
     # TEST_TYPE=qa：對話回應時間測試（script-qa.js）；未設定＝正式腳本
+    # TEST_TYPE=v3a／v3b：v3 分開測試的腳本 A 業務查詢／B FAQ 問答（由 k6suite 串接）
     if [ "${TEST_TYPE:-}" = qa ]; then
         export K6_SCRIPT="${APP_DIR}/runner/k6/script-qa.js"
+    elif [ "${TEST_TYPE:-}" = v3a ]; then
+        export K6_SCRIPT="${APP_DIR}/runner/k6/script-v3-a-business.js"
+    elif [ "${TEST_TYPE:-}" = v3b ]; then
+        export K6_SCRIPT="${APP_DIR}/runner/k6/script-v3-b-faq.js"
     else
         export K6_SCRIPT="${APP_DIR}/runner/k6/script.js"
     fi

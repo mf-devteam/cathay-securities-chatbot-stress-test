@@ -174,7 +174,12 @@ cmd_start() {
     echo
     echo "  RUN_ID     : ${RUN_ID}"
     echo "  受測端     : ${BASE_URL}"
-    echo "  測試類型   : $([ "${TEST_TYPE:-}" = qa ] && echo '對話回應時間測試（script-qa.js）' || echo '正式壓測（script.js）')"
+    case "${TEST_TYPE:-}" in
+        qa) echo "  測試類型   : 對話回應時間測試（script-qa.js）" ;;
+        v3a) echo "  測試類型   : v3 腳本 A 業務查詢（script-v3-a-business.js）" ;;
+        v3b) echo "  測試類型   : v3 腳本 B FAQ 問答（script-v3-b-faq.js）" ;;
+        *) echo "  測試類型   : 正式壓測（script.js）" ;;
+    esac
     echo "  STAGE_PLAN : ${STAGE_PLAN}（STAGE_SCOPE=${STAGE_SCOPE:-full}）"
     echo "  情境       : ${SCENARIO_WEIGHTS}"
     echo "  runner     : ${RUN_HOSTS[*]}（每台 1/${#RUN_HOSTS[@]}）"

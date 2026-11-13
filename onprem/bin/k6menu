@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # 壓測操作選單（control）：給證券方執行人員用，輸入數字即可操作，不需要記 k6ctl 指令。
-# 底層呼叫 k6ctl；進階操作仍可直接用 k6ctl（k6ctl help）。
+# 主選單是 v3 分開測試（腳本 A 業務查詢 → 腳本 B FAQ 問答 → 合併報表，底層為 k6suite）；
+# 舊版測試（逐階加壓正式壓測、對話回應時間測試）收在「9) 其他測試」。
+# 底層呼叫 k6suite／k6ctl；進階操作仍可直接用指令（k6suite help、k6ctl help）。
 # 以 k6 帳號執行；其他帳號執行時會自動 sudo -u k6。
 set -uo pipefail
 
@@ -9,6 +11,7 @@ DATA_DIR="${DATA_DIR:-/var/lib/k6-stress}"
 CONF_FILE="${CONF_FILE:-/etc/k6-stress/stress.env}"
 K6_USER="${K6_USER:-k6}"
 K6CTL="${APP_DIR}/onprem/bin/k6ctl"
+K6SUITE="${APP_DIR}/onprem/bin/k6suite"
 
 if [ "$(id -un)" != "$K6_USER" ]; then
     exec sudo -u "$K6_USER" -H "$0" "$@"
@@ -46,7 +49,8 @@ confirm() { # confirm <提示>：輸入 yes 才回傳 0
     return 1
 }
 
-latest_run() { ls -1t "${DATA_DIR}/runs" 2>/dev/null | head -1; }
+# 舊版測試的最近一輪（不含 v3 測試的腳本 A／B，那些由 k6suite 管理）
+latest_run() { ls -1t "${DATA_DIR}/runs" 2>/dev/null | grep -Ev -- '-v3.*-[AB]$' | head -1; }
 
 # 0 全部結束、1 執行中、2 有 runner 異常、3 沒有紀錄
 run_state() {
@@ -91,35 +95,74 @@ progress_text() {
 }
 
 header() {
-    local run rc=0
+    local run rc=0 suite
     clear 2>/dev/null || true
     line
     echo "  ${B}新阿發 壓力測試${N}　　$(date '+%Y-%m-%d %H:%M')"
     echo "  受測端：${BASE_URL}"
     echo "  runner：$(tr ';' ' ' <<< "${RUNNERS}")"
+    if suite="$(suite_running)"; then
+        echo "  狀態：${Y}${B}測試執行中${N}（${suite}）"
+        echo "        $("$K6SUITE" brief "$suite" 2>/dev/null)，選 5 查看進度"
+        line
+        return
+    fi
+    if [ "$(latest_kind)" = suite ]; then
+        echo "  狀態：沒有執行中的測試（上一組 $(latest_suite) 已結束，選 7 取得報表）"
+        line
+        return
+    fi
     run="$(latest_run)"
     run_state "$run" || rc=$?
     case "$rc" in
         3) echo "  狀態：尚未執行過壓測" ;;
         1) echo "  狀態：${Y}${B}壓測執行中${N}（${run}）"; echo "        $(progress_text "$run")" ;;
         0) echo "  狀態：沒有執行中的壓測（上一輪 ${run} 已結束）" ;;
-        *) echo "  狀態：${R}上一輪 ${run} 有 runner 異常，請選 4 查看${N}" ;;
+        *) echo "  狀態：${R}上一輪 ${run} 有 runner 異常，請選 5 查看${N}" ;;
     esac
     line
 }
 
 menu() {
-    echo "   1) 壓測前檢查        （每次壓測前先做，約 1 分鐘）"
-    echo "   2) 開始試跑          （低流量，約 $(stage_minutes smoke) 分鐘）"
-    echo "   3) 開始正式壓測      （約 $(stage_minutes full) 分鐘）"
-    echo "   4) 查看進度"
-    echo "   5) 停止壓測"
-    echo "   6) 產生報表"
-    echo "   7) 打包問題資料      （有問題時，把產生的檔案寄給${CONTACT}）"
-    echo "   8) 對話回應時間測試 1 倍（$(qa_peak_tps "$QA_STAGE_PLAN_X1") TPS，約 $(stage_minutes full "$QA_STAGE_PLAN_X1") 分鐘）"
-    echo "   9) 對話回應時間測試 3 倍（$(qa_peak_tps "$QA_STAGE_PLAN") TPS，約 $(stage_minutes full "$QA_STAGE_PLAN") 分鐘）"
+    echo "   1) 壓測前檢查        （每次測試前先做，約 1 分鐘）"
+    echo "   2) 試跑 A→B          （低流量，確認流程與報表正常，約 $(suite_minutes smoke) 分鐘）"
+    echo "   3) 正式測試 1 倍     （A 業務查詢 → B FAQ 問答 → 報表，約 $(suite_minutes x1) 分鐘）"
+    echo "   4) 正式測試 3 倍     （A 業務查詢 → B FAQ 問答 → 報表，約 $(suite_minutes x3) 分鐘）"
+    echo "   5) 查看進度"
+    echo "   6) 停止測試"
+    echo "   7) 取得報表"
+    echo "   8) 打包問題資料      （有問題時，把產生的檔案寄給${CONTACT}）"
+    echo "   9) 其他測試          （舊版：逐階加壓正式壓測、對話回應時間測試）"
     echo "   0) 離開"
     line
+}
+
+old_menu() {
+    echo "  ${B}其他測試（舊版）${N}：查看進度、停止、報表一樣用主選單的 5、6、7。"
+    echo
+    echo "   1) 舊版試跑                （逐階加壓的第一階段，約 $(stage_minutes smoke) 分鐘）"
+    echo "   2) 舊版正式壓測            （逐階加壓，約 $(stage_minutes full) 分鐘）"
+    echo "   3) 對話回應時間測試 1 倍   （FAQ、業務混合，$(qa_peak_tps "$QA_STAGE_PLAN_X1") TPS，約 $(stage_minutes full "$QA_STAGE_PLAN_X1") 分鐘）"
+    echo "   4) 對話回應時間測試 3 倍   （FAQ、業務混合，$(qa_peak_tps "$QA_STAGE_PLAN") TPS，約 $(stage_minutes full "$QA_STAGE_PLAN") 分鐘）"
+    echo "   0) 回主選單"
+    line
+}
+
+do_old_menu() {
+    local choice
+    while true; do
+        header
+        old_menu
+        read -r -p "  請輸入數字：" choice || return
+        case "$choice" in
+            1) do_start smoke ;;
+            2) do_start full ;;
+            3) do_start qa1 ;;
+            4) do_start qa3 ;;
+            0|q|Q|'') return ;;
+            *) ;;
+        esac
+    done
 }
 
 stage_minutes() { # stage_minutes smoke|full [STAGE_PLAN]：依目前設定估算一輪分鐘數（含收尾 1 分鐘）
@@ -127,10 +170,10 @@ stage_minutes() { # stage_minutes smoke|full [STAGE_PLAN]：依目前設定估�
     IFS=';' read -r -a entries <<< "${2:-$STAGE_PLAN}"
     for entry in "${entries[@]}"; do
         IFS=':' read -r id load hold ramp <<< "$entry"
-        t=$((t + ${ramp:-0} + ${hold:-0}))
+        t=$(awk -v t="$t" -v r="${ramp:-0}" -v h="${hold:-0}" 'BEGIN { print t + r + h }')  # 分鐘可以有小數
         [ "$1" = smoke ] && break
     done
-    echo $((t + 1))
+    awk -v t="$t" 'BEGIN { m = t + 1; printf "%d", (m == int(m)) ? m : int(m) + 1 }'
 }
 
 qa_peak_tps() { # qa_peak_tps <STAGE_PLAN>：對話回應時間測試的最高 TPS（各階段的最大值）
@@ -157,7 +200,7 @@ do_check() {
     echo
     line
     if [ "$fails" -eq 0 ] && [ "$warns" -eq 0 ]; then
-        ok "全部通過，可以開始壓測。建議先選 2 試跑。"
+        ok "全部通過，可以開始測試。建議先選 2 試跑。"
     elif [ "$fails" -eq 0 ]; then
         warn "連線正常，但有 ${warns} 項提醒（上方標示 ! 的項目）："
         grep -q 'HTTP 403' <<< "$out" && warn "對話 API 回 403：受測端的 reCAPTCHA 尚未暫停，請聯絡受測端負責人。暫停前不要開始壓測。"
@@ -169,7 +212,7 @@ do_check() {
         grep -Eq '逾時或被拒絕|無法連線' <<< "$out" && bad "連不到受測端：防火牆未開出站，或需要經過 Proxy，請聯絡網路管理人員。"
         grep -q '無法解析' <<< "$out" && bad "DNS 解析失敗：請聯絡網路管理人員確認 DNS 設定。"
         grep -q 'NTP' <<< "$(grep '✗' <<< "$out")" && bad "時間未同步：請聯絡系統管理人員設定 NTP。"
-        echo "  無法排除時，選 7 打包問題資料，把檔案寄給${CONTACT}。"
+        echo "  無法排除時，選 8 打包問題資料，把檔案寄給${CONTACT}。"
     fi
     pause
 }
@@ -183,11 +226,15 @@ next_run_id() { # 今天的第幾輪：20261105-01、20261105-smoke-01
 }
 
 do_start() { # do_start smoke|full|qa1|qa3
-    local kind="$1" run rc=0 run_id plan="" args=()
+    local kind="$1" run rc=0 run_id plan="" args=() suite
+    if suite="$(suite_running)"; then
+        echo; bad "${suite} 還在執行中，同時只能有一組測試。要重新開始請先回主選單選 6 停止。"
+        pause; return
+    fi
     run="$(latest_run)"
     run_state "$run" || rc=$?
     if [ "$rc" -eq 1 ]; then
-        echo; bad "${run} 還在執行中，同時只能有一輪壓測。要重新開始請先選 5 停止。"
+        echo; bad "${run} 還在執行中，同時只能有一輪壓測。要重新開始請先選 6 停止。"
         pause; return
     fi
     if [ "$kind" = smoke ]; then
@@ -218,12 +265,12 @@ do_start() { # do_start smoke|full|qa1|qa3
     [ "$kind" != smoke ] && { confirm "再確認一次：開始$([ -n "${plan:-}" ] && echo 對話回應時間測試 || echo 正式壓測)？" || { pause; return; }; }
     echo
     if ! "$K6CTL" start "$run_id" "${args[@]}" --yes; then
-        echo; bad "啟動失敗。請選 7 打包問題資料，把檔案寄給${CONTACT}。"
+        echo; bad "啟動失敗。請選 8 打包問題資料，把檔案寄給${CONTACT}。"
         pause; return
     fi
     echo
     ok "已開始。壓測在 runner 上執行，關閉這個視窗或斷線都不會中斷壓測。"
-    echo "  之後可以選 4 查看進度；結束後選 6 產生報表。"
+    echo "  之後可以選 5 查看進度；結束後選 7 產生報表。"
     if [ "$kind" = smoke ]; then
         echo
         read -r -p "  要在這裡等到試跑結束並自動產生報表嗎？（y＝等待，Enter＝回選單）" ans
@@ -245,13 +292,13 @@ show_result() { # 依各 runner 的 exit code 給白話結論
     elif grep -q 'exit=105' <<< "$out"; then
         warn "${run} 已手動停止。"
     elif grep -q 'exit=99' <<< "$out"; then
-        warn "${run} 已結束：有指標超過門檻，或錯誤過多而自動停止。工具本身正常，請選 6 看報表了解哪一項超標。"
+        warn "${run} 已結束：有指標超過門檻，或錯誤過多而自動停止。工具本身正常，請選 7 看報表了解哪一項超標。"
     else
-        bad "${run} 有 runner 異常結束。請選 7 打包問題資料，把檔案寄給${CONTACT}。"
+        bad "${run} 有 runner 異常結束。請選 8 打包問題資料，把檔案寄給${CONTACT}。"
     fi
 }
 
-do_status() {
+do_status_run() {
     local run
     run="$(latest_run)"
     [ -n "$run" ] || { echo; echo "  還沒有任何壓測紀錄。"; pause; return; }
@@ -262,7 +309,7 @@ do_status() {
 }
 
 # ---------- 5. 停止 ----------
-do_stop() {
+do_stop_run() {
     local run rc=0
     run="$(latest_run)"
     run_state "$run" || rc=$?
@@ -274,12 +321,12 @@ do_stop() {
     confirm "停止後這一輪無法繼續，只能重新開始。" || { pause; return; }
     "$K6CTL" stop "$run"
     echo
-    ok "已送出停止。約 1 分鐘後全部停下，之後選 6 產生報表（停止前的數據都會保留）。"
+    ok "已送出停止。約 1 分鐘後全部停下，之後選 7 產生報表（停止前的數據都會保留）。"
     pause
 }
 
 # ---------- 6. 報表 ----------
-do_report() {
+do_report_run() {
     local run rc=0
     run="$(latest_run)"
     [ -n "$run" ] || { echo; echo "  還沒有任何壓測紀錄。"; pause; return; }
@@ -298,7 +345,7 @@ do_report() {
         echo "  請用貴司平常從伺服器下載檔案的方式取出，以瀏覽器開啟（不需要連網）。"
     else
         tail -5 "${DATA_DIR}/runs/${run}/menu-report.log"
-        echo; bad "報表產生失敗。請選 7 打包問題資料，把檔案寄給${CONTACT}。"
+        echo; bad "報表產生失敗。請選 8 打包問題資料，把檔案寄給${CONTACT}。"
     fi
     pause
 }
@@ -330,6 +377,15 @@ do_support() {
         (cd "${DATA_DIR}/runs" && find "$run" -type f \( -name '*.log' -o -name '*.txt' -o -name '*.json' -o -name '*.env' \
             -o -name 'k6.exit' -o -name 'latest.html' \) -print0 | rsync -a --from0 --files-from=- ./ "${dir}/runs/")
     done
+    for run in $(ls -1t "${DATA_DIR}/suites" 2>/dev/null | head -2); do
+        mkdir -p "${dir}/suites/${run}"
+        (cd "${DATA_DIR}/suites/${run}" && cp -r ./*.env ./*.log stop-requested reports "${dir}/suites/${run}/" 2>/dev/null)
+        for p in A B; do
+            "$K6CTL" collect "${run}-${p}" > /dev/null 2>&1 || true
+            [ -d "${DATA_DIR}/runs/${run}-${p}" ] && (cd "${DATA_DIR}/runs" && find "${run}-${p}" -type f \( -name '*.log' -o -name '*.txt' \
+                -o -name '*.json' -o -name '*.env' -o -name 'k6.exit' \) -print0 | rsync -a --from0 --files-from=- ./ "${dir}/runs/")
+        done
+    done
     tar -C "$(dirname "$dir")" -czf "$out" "$(basename "$dir")"
     rm -rf "$(dirname "$dir")"
     echo
@@ -338,22 +394,211 @@ do_support() {
     pause
 }
 
+# ---------- v3 分開測試（腳本 A 業務查詢 → 休息 → 腳本 B FAQ 問答 → 合併報表） ----------
+suite_running() { "$K6SUITE" running 2>/dev/null; }
+latest_suite() { ls -1t "${DATA_DIR}/suites" 2>/dev/null | head -1; }
+
+# 最近一次是 v3 測試（suite）還是舊版測試（run）：比較兩者開始時寫的設定檔
+latest_kind() {
+    local s r
+    s="$(latest_suite)"
+    r="$(ls -1t "${DATA_DIR}/runs" 2>/dev/null | grep -Ev -- '-v3.*-[AB]$' | head -1)"
+    if [ -z "$s" ]; then echo run; return; fi
+    if [ -z "$r" ]; then echo suite; return; fi
+    if [ "${DATA_DIR}/runs/${r}/run.env" -nt "${DATA_DIR}/suites/${s}/suite.env" ]; then echo run; else echo suite; fi
+}
+
+plan_for() { # plan_for <smoke|x1|x3> <A|B>
+    case "$1" in
+        smoke) echo "$V3_PLAN_SMOKE" ;;
+        x1) [ "$2" = A ] && echo "$V3_PLAN_X1_A" || echo "$V3_PLAN_X1_B" ;;
+        x3) [ "$2" = A ] && echo "$V3_PLAN_X3_A" || echo "$V3_PLAN_X3_B" ;;
+    esac
+}
+
+part_minutes() { # 一支腳本：爬升＋持續＋收尾 1 分鐘
+    echo $(( $(stage_minutes full "$1") ))
+}
+
+suite_minutes() { # 整組：A＋休息＋B＋報表約 2 分鐘
+    local a b
+    a=$(part_minutes "$(plan_for "$1" A)"); b=$(part_minutes "$(plan_for "$1" B)")
+    awk -v a="$a" -v b="$b" -v g="${V3_GAP_MIN:-2}" 'BEGIN { printf "%d", a + g + b + 2 }'
+}
+
+plan_words() { # x3:354tps:10:1 → 爬升 1 分鐘到 354 TPS，固定負載 10 分鐘
+    local entry id load hold ramp out=""
+    IFS=';' read -r -a entries <<< "$1"
+    for entry in "${entries[@]}"; do
+        IFS=':' read -r id load hold ramp <<< "$entry"
+        out+="${out:+；}爬升 ${ramp:-0} 分鐘到 ${load%tps} TPS，固定負載 ${hold} 分鐘"
+    done
+    echo "$out"
+}
+
+do_v3() { # do_v3 smoke|x1|x3
+    local kind="$1" run rc=0 suite abort="${V3_ABORT_DEFAULT:-false}" ans title start_flag
+    if suite="$(suite_running)"; then
+        echo; bad "${suite} 還在執行中，同時只能有一組測試。可以選 5 查看進度，或選 6 停止。"
+        pause; return
+    fi
+    run="$(latest_run)"
+    run_state "$run" || rc=$?
+    if [ "$rc" -eq 1 ]; then
+        echo; bad "舊版測試 ${run} 還在執行中，同時只能有一組測試。要重新開始請先選 6 停止。"
+        pause; return
+    fi
+    case "$kind" in
+        smoke) title="試跑 A→B（低流量）" ;;
+        x1) title="正式測試 1 倍" ;;
+        x3) title="正式測試 3 倍" ;;
+    esac
+    echo
+    echo "  ${B}${title}${N}：以下步驟會自動依序完成，中途不需要操作。"
+    echo
+    echo "   ① 腳本 A 業務查詢（B2-2 FAQ intent、C1 查看 ETF 清單）"
+    echo "      $(plan_words "$(plan_for "$kind" A)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_A_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
+    echo "   ② 休息 ${V3_GAP_MIN} 分鐘"
+    echo "   ③ 腳本 B FAQ 問答（B2 FAQ 問答、B3 多輪對話、B4 知識庫以外問題、B5 Model Armor 攔截）"
+    echo "      $(plan_words "$(plan_for "$kind" B)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_B_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
+    echo "   ④ 產生合併報表（A、B 分開呈現）"
+    echo
+    echo "  受測端　：${BASE_URL}"
+    echo "  預計時間：約 $(suite_minutes "$kind") 分鐘，約 $(date -d "+$(suite_minutes "$kind") min" +%H:%M) 完成"
+    if [ "$kind" != smoke ]; then
+        echo
+        echo "  遇到嚴重異常時要自動停止嗎？"
+        if [ "$abort" = true ]; then
+            echo "   1) 自動停止：開始 ${V3_ABORT_DELAY} 後，失敗率超過 $(awk -v r="$V3_ABORT_FAIL_RATE" 'BEGIN { printf "%g", r * 100 }')% 就停止該支腳本（預設）"
+            echo "   2) 不停，一律跑完"
+            read -r -p "  請選擇 [1]：" ans
+            [ "$ans" = 2 ] && abort=false
+        else
+            echo "   1) 不停，一律跑完（預設，直接按 Enter）"
+            echo "   2) 自動停止：開始 ${V3_ABORT_DELAY} 後，失敗率超過 $(awk -v r="$V3_ABORT_FAIL_RATE" 'BEGIN { printf "%g", r * 100 }')% 就停止該支腳本"
+            read -r -p "  請選擇 [1]：" ans
+            [ "$ans" = 2 ] && abort=true
+        fi
+        if [ "$abort" = true ]; then
+            echo "  → 自動停止：開啟。A 被自動停止時，休息後照樣跑 B。"
+        else
+            echo "  → 自動停止：關閉，A、B 都會跑完。"
+        fi
+        warn "請確認：已先試跑成功、受測端負責人已同意、監控人員已就位。"
+    fi
+    confirm "即將開始${title}。" || { pause; return; }
+    [ "$kind" != smoke ] && { confirm "再確認一次：開始${title}？" || { pause; return; }; }
+    [ "$abort" = true ] && start_flag=--abort || start_flag=--no-abort
+    echo
+    echo "  啟動中…"
+    if ! suite="$("$K6SUITE" start "$kind" "$start_flag" 2>&1)"; then
+        echo "$suite"
+        echo; bad "啟動失敗。請選 8 打包問題資料，把檔案寄給${CONTACT}。"
+        pause; return
+    fi
+    ok "已開始，測試編號 ${suite}。測試在背景執行，關閉這個視窗或斷線都不會中斷。"
+    sleep 2
+    do_watch "$suite"
+}
+
+# 進度畫面：每 10 秒自動更新；按 Enter 或 Ctrl+C 回到選單（測試照樣在背景執行）
+do_watch() {
+    local suite="${1:-$(latest_suite)}" leave=false phase
+    [ -n "$suite" ] || { echo; echo "  還沒有任何測試紀錄。"; pause; return; }
+    trap 'leave=true' INT
+    while ! $leave; do
+        clear 2>/dev/null || true
+        line
+        echo "  ${B}新阿發 測試進度${N}　　$(date '+%Y-%m-%d %H:%M:%S')"
+        line
+        "$K6SUITE" progress "$suite"
+        phase="$(grep '^PHASE=' "${DATA_DIR}/suites/${suite}/state.env" 2>/dev/null | cut -d= -f2)"
+        line
+        if [ "$phase" = done ]; then
+            echo "  已結束。報表請用瀏覽器開啟（不需要連網）：可以用貴司平常從伺服器下載檔案的方式取出。"
+            trap - INT
+            pause
+            return
+        fi
+        echo "  每 10 秒自動更新。按 Enter 回到選單（${B}測試會繼續在背景執行${N}，之後選 5 可以回來看）。"
+        # 0＝按了 Enter、1＝輸入已關閉：回選單；> 128＝10 秒到了（或 Ctrl+C，由 trap 處理）：繼續更新
+        read -r -t 10 _
+        [ $? -le 128 ] && leave=true
+    done
+    trap - INT
+}
+
+do_progress() {
+    if suite="$(suite_running)" || [ "$(latest_kind)" = suite ]; then do_watch "${suite:-$(latest_suite)}"; else do_status_run; fi
+}
+
+do_stop() {
+    local suite run rc=0
+    if suite="$(suite_running)"; then
+        echo
+        echo "  執行中：${suite}　$("$K6SUITE" brief "$suite")"
+        echo "  停止後 A、B 都不會再跑（還沒跑的腳本不會開始），會用停止前的數據產生報表。"
+        confirm "停止後這一組無法繼續，只能重新開始。" || { pause; return; }
+        "$K6SUITE" stop "$suite"
+        echo
+        ok "已送出停止。約 1～2 分鐘後停下並產生報表，可以留在進度畫面等候。"
+        sleep 2
+        do_watch "$suite"
+        return
+    fi
+    run="$(latest_run)"
+    run_state "$run" || rc=$?
+    if [ "$rc" -eq 1 ] || [ "$rc" -eq 2 ]; then do_stop_run; return; fi
+    echo; echo "  目前沒有執行中的測試。"; pause
+}
+
+do_report() {
+    local suite sdir rpt
+    if [ "$(latest_kind)" != suite ] && ! suite_running > /dev/null; then do_report_run; return; fi
+    suite="$(suite_running)" || suite="$(latest_suite)"
+    sdir="${DATA_DIR}/suites/${suite}"
+    rpt="${sdir}/reports/report-${suite}.html"
+    echo
+    if suite_running > /dev/null; then
+        warn "${suite} 還在執行中，全部跑完後會自動產生報表。"
+        read -r -p "  要先產生「截至目前」的報表嗎？（y＝產生，Enter＝回選單）" ans
+        [ "$ans" = y ] || [ "$ans" = Y ] || { return; }
+    elif [ -f "$rpt" ]; then
+        ok "${suite} 的報表："
+        echo "     ${B}${rpt}${N}"
+        echo "  請用貴司平常從伺服器下載檔案的方式取出，以瀏覽器開啟（不需要連網）。"
+        echo
+        read -r -p "  要重新產生嗎？（y＝重新產生，Enter＝回選單）" ans
+        [ "$ans" = y ] || [ "$ans" = Y ] || { return; }
+    fi
+    echo "  產生 ${suite} 的報表，請稍候…"
+    if "$K6SUITE" report "$suite" > "${sdir}/menu-report.log" 2>&1; then
+        echo; ok "報表已產生："
+        echo "     ${B}${rpt}${N}"
+        echo "  請用貴司平常從伺服器下載檔案的方式取出，以瀏覽器開啟（不需要連網）。"
+    else
+        tail -5 "${sdir}/menu-report.log"
+        echo; bad "報表產生失敗。請選 8 打包問題資料，把檔案寄給${CONTACT}。"
+    fi
+    pause
+}
+
 # ---------- 主程式 ----------
 load_config
 while true; do
     header
     menu
-    read -r -p "  請輸入數字：" choice
+    read -r -p "  請輸入數字：" choice || { echo; exit 0; }  # 輸入已關閉（例如斷線）
     case "$choice" in
         1) do_check ;;
-        2) do_start smoke ;;
-        3) do_start full ;;
-        4) do_status ;;
-        5) do_stop ;;
-        6) do_report ;;
-        7) do_support ;;
-        8) do_start qa1 ;;
-        9) do_start qa3 ;;
+        2) do_v3 smoke ;;
+        3) do_v3 x1 ;;
+        4) do_v3 x3 ;;
+        5) do_progress ;;
+        6) do_stop ;;
+        7) do_report ;;
+        8) do_support ;;
+        9) do_old_menu ;;
         0|q|Q) echo; exit 0 ;;
         *) ;;
     esac
