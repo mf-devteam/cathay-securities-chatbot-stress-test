@@ -9,7 +9,7 @@
 //   - 指標名稱沿用 qa_failed／qa_opening_failed（報表 Job 共用）
 //   - 問句與舊版腳本共用 data/questions.json（只用到本腳本情境的問句）
 // 不同之處：
-//   - 每支腳本只抽自己的情境：A＝flow business（B2-2、C1），B＝flow faq（B2、B5；客戶 2026-11-16 拿掉 B3、B4）；
+//   - 每支腳本只抽自己的情境：A＝flow business（B2-2、C1），B＝flow faq（B2、B3、B4、B5）；
 //     情境與權重由 k6suite 以 SCENARIO_WEIGHTS 帶入（defaults.env 的 V3_A_WEIGHTS／V3_B_WEIGHTS），混到別類會直接報錯
 //   - 回應時間門檻各自一個：A V3_A_MAX_MS（6 秒）、B V3_B_MAX_MS（20 秒），以 V3_LATENCY_PCT（p95）判定
 //   - 自動停止由執行人員開始前選擇（V3_ABORT）：開始 V3_ABORT_DELAY 後，累計失敗率 > V3_ABORT_FAIL_RATE 就停止這支腳本
