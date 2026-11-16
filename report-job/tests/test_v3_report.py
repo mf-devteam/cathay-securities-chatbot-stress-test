@@ -94,6 +94,8 @@ class V3ReportTest(unittest.TestCase):
         self.write_run("S-A", a)
         self.write_run("S-B", b)
         self.write_state("A_REASON=completed\nB_REASON=completed\nFINAL=completed\n")
+        with open(os.path.join(self.root, "runs", "S-A", "questions.json"), "w", encoding="utf-8") as f:
+            f.write('{"B1": ["你好"], "B2-2": ["密碼補發"], "C1": ["我要投資ETF"]}')
         r = self.build()
         self.assertEqual(r["verdicts"], {"A": "pass", "B": "fail"})
         ja = r["parts"]["A"]["judged"]
@@ -112,6 +114,8 @@ class V3ReportTest(unittest.TestCase):
         page = read(os.path.join(self.suite, "reports", "report-20261113-v3x3-01.html"))
         self.assertIn("B2-2 FAQ intent", page)
         self.assertIn("完成對話數", page)
+        self.assertIn("我要投資ETF", page)  # 附錄列出這一組用的問句
+        self.assertIn("腳本甲", page)
         self.assertIn("完成對話 1／2 筆", verdict_env)
         self.assertIn("≤ 6 秒", page)
         self.assertIn("≤ 20 秒", page)

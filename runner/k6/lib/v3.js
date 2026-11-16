@@ -1,4 +1,4 @@
-// v3 分開測試（客戶 2026-11-13 確認）：業務查詢（腳本 A）與 FAQ 問答（腳本 B）分成兩支腳本，先跑 A 再跑 B，最後合併一份報表。
+// v3 分開測試（客戶 2026-11-13 確認）：業務查詢（腳本甲，程式代號 A）與 FAQ 問答（腳本乙，代號 B）分成兩支腳本，先甲後乙，最後合併一份報表。
 // 兩支腳本的入口：script-v3-a-business.js、script-v3-b-faq.js（只差 PART），共用這裡的邏輯。
 // 由 control 的 onprem/bin/k6suite 依序啟動，不影響 script.js（正式壓測）與 script-qa.js（對話回應時間測試）。
 //
@@ -29,8 +29,8 @@ function num(name, def) {
 }
 
 export const PARTS = {
-    A: { name: '業務查詢', flow: 'business', maxEnv: 'V3_A_MAX_MS', maxDefault: 6000 },
-    B: { name: 'FAQ 問答', flow: 'faq', maxEnv: 'V3_B_MAX_MS', maxDefault: 20000 },
+    A: { label: '甲', name: '業務查詢', flow: 'business', maxEnv: 'V3_A_MAX_MS', maxDefault: 6000 },
+    B: { label: '乙', name: 'FAQ 問答', flow: 'faq', maxEnv: 'V3_B_MAX_MS', maxDefault: 20000 },
 };
 
 // 每支腳本建立一次（k6 的 options、default、handleSummary 必須由入口檔案 export）
@@ -50,7 +50,7 @@ export function buildPart(partId, loadQuestions) {
     // 只能有這支腳本自己的情境（避免 A 混到 FAQ、B 混到業務查詢）
     const wrong = ACTIVE.filter((s) => s.flow !== part.flow);
     if (wrong.length > 0) {
-        throw new Error(`腳本 ${partId}（${part.name}）只能用 ${part.flow} 類的情境，SCENARIO_WEIGHTS 有：${wrong.map((s) => s.id).join('、')}`);
+        throw new Error(`腳本${part.label}（${part.name}）只能用 ${part.flow} 類的情境，SCENARIO_WEIGHTS 有：${wrong.map((s) => s.id).join('、')}`);
     }
 
     const PEAK_TPS = Math.max(...ACTIVE_STAGES.map((s) => s.pct * BASE_CONV_RATE * CALLS_PER_CONV));
@@ -128,7 +128,7 @@ export function buildPart(partId, loadQuestions) {
 
     function setup() {
         console.log(
-            `[k6] v3 腳本 ${partId} ${part.name} RUN_ID=${RUN_ID} 最高 ${PEAK_TPS.toFixed(1)} TPS 階段=${ACTIVE_STAGES.map((s) => s.id).join('→')} ` +
+            `[k6] v3 腳本${part.label} ${part.name} RUN_ID=${RUN_ID} 最高 ${PEAK_TPS.toFixed(1)} TPS 階段=${ACTIVE_STAGES.map((s) => s.id).join('→')} ` +
                 `時間÷${TIME_SCALE} 門檻 ${pct}<${MAX_MS}ms 失敗率≤${FAIL_RATE} ` +
                 `自動停止=${ABORT ? `開始 ${ABORT_DELAY} 後失敗率>${ABORT_FAIL_RATE}` : '不停止'} ` +
                 `情境占比 ${SHARES} VU=${PRE_VUS}/${MAX_VUS}（全部 task 合計） 模擬前端=${SIMULATE_FRONTEND}`
@@ -167,7 +167,7 @@ export function buildPart(partId, loadQuestions) {
         const total = (v('qa_failed', 'passes') || 0) + (v('qa_failed', 'fails') || 0);
         const lines = [
             '',
-            `===== 新阿發 v3 腳本 ${partId} ${part.name}｜RUN_ID=${RUN_ID} STAGE_SCOPE=${STAGE_SCOPE} 最高 ${PEAK_TPS.toFixed(1)} TPS =====`,
+            `===== 新阿發 v3 腳本${part.label} ${part.name}｜RUN_ID=${RUN_ID} STAGE_SCOPE=${STAGE_SCOPE} 最高 ${PEAK_TPS.toFixed(1)} TPS =====`,
             `情境占比   : ${SHARES}`,
             `對話總筆數 : ${total}（不含開場問候）`,
             `對話失敗   : ${v('qa_failed', 'passes') || 0}  失敗率 ${rate(v('qa_failed', 'rate'))}（門檻 ≤ ${rate(FAIL_RATE)}）`,

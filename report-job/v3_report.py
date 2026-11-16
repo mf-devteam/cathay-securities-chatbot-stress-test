@@ -1,4 +1,6 @@
-"""v3 分開測試的合併報表：腳本 A 業務查詢、腳本 B FAQ 問答各自的原始數據 → 一份 HTML（A、B 分區，不混算）。
+"""v3 分開測試的合併報表：腳本甲 業務查詢、腳本乙 FAQ 問答各自的原始數據 → 一份 HTML（甲、乙分區，不混算）。
+
+對客戶一律稱「腳本甲／乙」（客戶 2026-11-16 要求）；程式內部代號仍為 A／B（suite.env 的 RUN_A、PLAN_A 等）。
 
 由 control 的 onprem/bin/k6suite 在兩支腳本跑完後呼叫；也可以手動重跑：
     python3 v3_report.py --suite-dir /var/lib/k6-stress/suites/<SUITE_ID> --runs-dir /var/lib/k6-stress/runs
@@ -7,7 +9,7 @@
     <suite-dir>/suite.env、state.env   k6suite 寫的本組參數（負載、門檻、自動停止）與各腳本的結束原因
     <runs-dir>/<RUN_A>、<RUN_B>        各腳本的 raw/task-*.csv.gz（k6 CSV）與 status/task-*.json
 輸出（<suite-dir>/reports/）：
-    report-<SUITE_ID>.html、latest.html   合併報表（給長官看的版本：結論在最前面，列印時 A、B 各自分頁）
+    report-<SUITE_ID>.html、latest.html   合併報表（給長官看的版本：結論在最前面，列印時甲、乙各自分頁）
     summary.json                          數字摘要
     verdict.env                           A_VERDICT／B_VERDICT 等，k6menu 顯示結論用
 
@@ -36,8 +38,8 @@ from render import line_chart
 TZ = ZoneInfo("Asia/Taipei")
 
 PARTS = {
-    "A": {"name": "業務查詢", "flow": "business", "max_key": "A_MAX_MS", "color": "#0d9488"},
-    "B": {"name": "FAQ 問答", "flow": "faq", "max_key": "B_MAX_MS", "color": "#7c3aed"},
+    "A": {"label": "甲", "name": "業務查詢", "flow": "business", "max_key": "A_MAX_MS", "color": "#0d9488"},
+    "B": {"label": "乙", "name": "FAQ 問答", "flow": "faq", "max_key": "B_MAX_MS", "color": "#7c3aed"},
 }
 # 與 runner/k6/lib/scenarios.js 的 CATALOG 相同
 CASE_NAMES = {
@@ -350,6 +352,12 @@ def g(x):
     return f"{x:g}"
 
 
+def dur_text(d: str) -> str:
+    """k6 的時間格式：3m → 3 分鐘、20s → 20 秒。"""
+    units = {"m": " 分鐘", "s": " 秒", "h": " 小時"}
+    return d[:-1] + units[d[-1]] if d and d[-1] in units else d
+
+
 def plan_text(plan: str) -> tuple[str, float]:
     """x3:354tps:10:1 → （爬升 1 分鐘到 354 TPS，固定負載 10 分鐘, 354）"""
     parts, peak = [], 0.0
@@ -433,7 +441,7 @@ figure{margin:18px 0 0}figcaption{font-weight:600;font-size:14px;margin-bottom:4
 .warn{background:var(--ng-bg);color:var(--ng);border-radius:8px;padding:8px 12px;font-size:13px;margin-top:10px}
 dl.gloss{display:grid;grid-template-columns:180px 1fr;gap:6px 16px;font-size:14px;margin:8px 0}dl.gloss dt{font-weight:600}dl.gloss dd{margin:0}
 .rules td.grp{color:var(--muted);text-align:left;width:72px}.rules td.name{text-align:left;font-weight:600;width:150px;white-space:normal}
-.rules td.l{line-height:1.6}
+.rules td.l{line-height:1.6}ul.qs{margin:0;padding-left:18px}
 footer{margin-top:40px;font-size:12px;color:var(--muted);text-align:center}
 @media (max-width:720px){.verdicts{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}dl.gloss{grid-template-columns:1fr}}
 @media print{
@@ -460,7 +468,7 @@ def _gauge(value, limit, color):
 def verdict_card(pid, part, v, reason, *, limit_ms, fail_limit, pct, target_tps, abort_rate):
     info = PARTS[pid]
     color = info["color"]
-    head = (f'<div class="head"><div><div class="who">腳本 {pid}</div><div class="name">{e(info["name"])}</div></div>'
+    head = (f'<div class="head"><div><div class="who">腳本{info["label"]}</div><div class="name">{e(info["name"])}</div></div>'
             f'<div class="badge {v}">{BADGE[v]}</div></div>')
     if part.get("empty"):
         why = REASON_NAMES.get(reason, "沒有數據")
@@ -531,9 +539,9 @@ def timeline_html(env, parts, state):
         share = (x1 - x0) / total
         text = e(label) if share >= 0.05 else ""  # 太窄的區段不放文字（滑鼠移上去看）
         return f'<div class="{cls}" style="flex:{share:.4f};{style}" title="{e(label)}">{text}</div>'
-    segs.append(seg("", f"background:{PARTS['A']['color']}", a0, a1, f"A 業務查詢 {hm(a0)}–{hm(a1)}"))
+    segs.append(seg("", f"background:{PARTS['A']['color']}", a0, a1, f"甲 業務查詢 {hm(a0)}–{hm(a1)}"))
     segs.append(seg("gap", "", a1, b0, "休息"))
-    segs.append(seg("", f"background:{PARTS['B']['color']}", b0, b1, f"B FAQ 問答 {hm(b0)}–{hm(b1)}"))
+    segs.append(seg("", f"background:{PARTS['B']['color']}", b0, b1, f"乙 FAQ 問答 {hm(b0)}–{hm(b1)}"))
     segs.append(seg("rep", "", r0, r1, "報表"))
     return (f'<div class="tl">{"".join(segs)}</div>'
             f'<div class="tl-axis"><span>{hm(t_start)}</span><span>{hm(t_end)}</span></div>')
@@ -542,7 +550,7 @@ def timeline_html(env, parts, state):
 def part_section(pid, part, reason, *, limit_ms, fail_limit, pct, plan, weights, target_tps):
     info = PARTS[pid]
     color = info["color"]
-    title = (f'<div class="part-title" style="--c:{color}"><span class="tag" style="background:{color}">腳本 {pid}</span>'
+    title = (f'<div class="part-title" style="--c:{color}"><span class="tag" style="background:{color}">腳本{info["label"]}</span>'
              f'<span class="t">{e(info["name"])}</span><span class="muted">{e(plan_text(plan)[0])}</span></div>')
     if part.get("empty"):
         return f'<section class="part page">{title}<p class="callout">這支腳本{e(REASON_NAMES.get(reason, "沒有數據"))}，沒有數據。</p></section>'
@@ -628,10 +636,36 @@ def part_section(pid, part, reason, *, limit_ms, fail_limit, pct, plan, weights,
 </section>"""
 
 
+def questions_html(env: dict, runs_dir: str) -> str:
+    """這一組實際用的問句（k6ctl start 時存在 runs/<RUN_ID>/questions.json）。"""
+    rows = []
+    opening_done = False
+    for pid in ("A", "B"):
+        path = os.path.join(runs_dir, env.get(f"RUN_{pid}", ""), "questions.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                q = json.load(f)
+        except (OSError, ValueError):
+            continue
+        ids = [p.partition(":")[0] for p in env.get(f"WEIGHTS_{pid}", "").split(";") if p]
+        if not opening_done and q.get("B1"):
+            ids = ["B1"] + ids
+            opening_done = True
+        for cid in ids:
+            items = "".join(f"<li>{e(x)}</li>" for x in q.get(cid, []))
+            who = "開場（不計入）" if cid == "B1" else f"腳本{PARTS[pid]['label']}"
+            rows.append(f"<tr><td class='grp'>{e(who)}</td><td class='name'>{e(cid)} {e(CASE_NAMES.get(cid, ''))}</td>"
+                        f"<td class='l'><ul class='qs'>{items}</ul></td></tr>")
+    if not rows:
+        return ""
+    return ('<h3>測試問句</h3><table class="rules"><tr><th class="l">腳本</th><th class="l">情境</th><th class="l">問句（每則提問從中隨機抽一句）</th></tr>'
+            f'{"".join(rows)}</table>')
+
+
 def rules_table(pct, limits, fail_limit, abort_rate):
     """判定規則與計算方式（報表會被轉寄，判讀規則要寫在報表裡，不能只放在文件）。"""
     key = f"p{g(pct)}"
-    lim = f"A {g(limits['A'] / 1000)} 秒、B {g(limits['B'] / 1000)} 秒"
+    lim = f"甲 {g(limits['A'] / 1000)} 秒、乙 {g(limits['B'] / 1000)} 秒"
     rows = [
         ("判定", "通過", f"回應時間 {key} ≤ 門檻（{lim}）<b>且</b> 對話失敗率 ≤ {g(fail_limit * 100)}%。"),
         ("判定", "未通過", f"上面兩項任一項超過門檻；或依設定自動停止（失敗率超過 {g(abort_rate * 100)}%）。"),
@@ -639,7 +673,7 @@ def rules_table(pct, limits, fail_limit, abort_rate):
         ("判定", "未執行", "這支腳本沒有開始，例如前一支執行時已手動停止整組測試。"),
         ("數字", "判定範圍", "每支腳本爬升到目標 TPS 之後的固定負載期間（不含爬升與收尾）。爬升中就停止時，改用整輪數據。"),
         ("數字", f"回應時間 {key}", f"判定範圍內所有對話的回應時間由快到慢排序，取第 {g(pct)}% 那一筆（兩筆之間線性內插，與 k6 相同）。"
-                               "A、B 各自計算，不合併。"),
+                               "甲、乙各自計算，不合併。"),
         ("數字", "對話失敗率", "失敗筆數 ÷ 對話筆數。"),
         ("數字", "完成對話數", "對話筆數 − 失敗筆數（有正常回覆的對話）。每秒完成＝完成對話數 ÷ 判定範圍的秒數，代表系統實際處理量。"),
         ("數字", "實際負載（TPS）", "判定範圍內的聊天 API 請求數 ÷ 秒數，含開場問候，因此會比「每秒對話數」略高。"),
@@ -677,21 +711,21 @@ def render_page(env, state, parts, verdicts, *, title, generated_ms):
     if state.get("FINAL") == "stopped" or os.path.exists(os.path.join(env["_dir"], "stop-requested")):
         stopped_note = '<div class="callout">本組測試由執行人員手動停止，報表為停止前的數據。</div>'
 
-    abort_txt = (f"開啟（開始 {e(env.get('ABORT_DELAY', ''))} 後，累計失敗率超過 {g(abort_rate * 100)}% 就停止該支腳本）"
+    abort_txt = (f"開啟（開始 {e(dur_text(env.get('ABORT_DELAY', '')))} 後，累計失敗率超過 {g(abort_rate * 100)}% 就停止該支腳本）"
                  if env.get("ABORT") == "true" else "關閉（一律跑完）")
     params = "".join(
-        f"<tr><td class='l'>腳本 {pid} {e(PARTS[pid]['name'])}</td><td class='l'>{e(plan_text(plans[pid])[0])}</td>"
+        f"<tr><td class='l'>腳本{PARTS[pid]['label']} {e(PARTS[pid]['name'])}</td><td class='l'>{e(plan_text(plans[pid])[0])}</td>"
         f"<td class='l'>{e(weights_text(weights[pid]))}</td><td>p{g(pct)} ≤ {g(limits[pid] / 1000)} 秒</td>"
         f"<td>{g(fail_limit * 100)}%</td></tr>" for pid in ("A", "B"))
     tasks = "".join(
-        f"<tr><td class='l'>腳本 {pid}</td><td class='l'>{e(t['name'])}</td><td>{e(t.get('state') or '—')}</td>"
+        f"<tr><td class='l'>腳本{PARTS[pid]['label']}</td><td class='l'>{e(t['name'])}</td><td>{e(t.get('state') or '—')}</td>"
         f"<td>{e(t.get('k6_exit') if t.get('k6_exit') is not None else '—')}</td><td>{num(t['requests'])}</td></tr>"
         for pid in ("A", "B") for t in (parts[pid].get("tasks") or []))
 
     body = f"""
 <header class="top">
 <h1>{e(title)}</h1>
-<div class="sub">業務查詢（腳本 A）與 FAQ 問答（腳本 B）分開測試｜{e(kind)}</div>
+<div class="sub">業務查詢（腳本甲）與 FAQ 問答（腳本乙）分開測試｜{e(kind)}</div>
 <div class="meta">
 <div><span>測試編號</span>{e(env.get('SUITE_ID', ''))}</div>
 <div><span>測試時間</span>{hm(t_first, '%Y-%m-%d %H:%M')}–{hm(t_last)}</div>
@@ -711,7 +745,7 @@ def render_page(env, state, parts, verdicts, *, title, generated_ms):
 <div class="timeline">
 {timeline_html(env, parts, state)}
 <ul class="how">
-<li>先跑腳本 A（業務查詢），休息 {e(env.get('GAP_MIN', ''))} 分鐘讓系統回穩，再跑腳本 B（FAQ 問答）。兩支腳本的數據分開計算，不混在一起。</li>
+<li>先跑腳本甲（業務查詢），休息 {e(env.get('GAP_MIN', ''))} 分鐘讓系統回穩，再跑腳本乙（FAQ 問答）。兩支腳本的數據分開計算，不混在一起。</li>
 <li>每支腳本：{e(plan_text(plans['A'])[0]) if plans['A'] == plans['B'] else '負載見附錄'}。<b>判定只看固定負載期間</b>，不含爬升。</li>
 <li>以「對話」為單位：使用者提問的一問一答＝一則對話。回應時間＝送出問題到收完回覆（含 AI 生成時間）。</li>
 <li>失敗＝回應不是預期結果：系統錯誤（5xx）、逾時、HTTP 429，或回應內容不符預期。</li>
@@ -726,6 +760,7 @@ def render_page(env, state, parts, verdicts, *, title, generated_ms):
 <h3>測試參數</h3>
 <table><tr><th class="l">腳本</th><th class="l">負載</th><th class="l">情境占比</th><th>回應時間門檻</th><th>失敗率門檻</th></tr>{params}</table>
 <p class="hint">自動停止：{abort_txt}。TPS＝聊天 API 每秒請求數（含開場問候）。</p>
+{questions_html(env, env.get('_runs', ''))}
 {rules_table(pct, limits, fail_limit, abort_rate)}
 <h3>名詞說明</h3>
 <dl class="gloss">
@@ -751,6 +786,7 @@ def render_page(env, state, parts, verdicts, *, title, generated_ms):
 def build(suite_dir: str, runs_dir: str, title: str) -> dict:
     env = read_env(os.path.join(suite_dir, "suite.env"))
     env["_dir"] = suite_dir
+    env["_runs"] = runs_dir
     state = read_env(os.path.join(suite_dir, "state.env"))
     pct = float(env.get("LATENCY_PCT", 95))
     fail_limit = float(env.get("FAIL_RATE", 0.005))
@@ -758,7 +794,7 @@ def build(suite_dir: str, runs_dir: str, title: str) -> dict:
     for pid, info in PARTS.items():
         run = env.get(f"RUN_{pid}", "")
         data = load_run(os.path.join(runs_dir, run)) if run else RunData()
-        print(f"[v3-report] 腳本 {pid} {run}：{len(data.reqs):,} 筆聊天 API 請求", flush=True)
+        print(f"[v3-report] 腳本{info['label']} {run}：{len(data.reqs):,} 筆聊天 API 請求", flush=True)
         parts[pid] = compute_part(data, flow=info["flow"], limit_ms=float(env.get(info["max_key"], 0)), pct=pct,
                                   fail_rate_limit=fail_limit)
         verdicts[pid] = verdict(parts[pid], state.get(f"{pid}_REASON", ""))

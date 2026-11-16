@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 壓測操作選單（control）：給證券方執行人員用，輸入數字即可操作，不需要記 k6ctl 指令。
-# 主選單是 v3 分開測試（腳本 A 業務查詢 → 腳本 B FAQ 問答 → 合併報表，底層為 k6suite）；
+# 主選單是 v3 分開測試（腳本甲 業務查詢 → 腳本乙 FAQ 問答 → 合併報表，底層為 k6suite）；
+# 對客戶一律稱「腳本甲／乙」（客戶 2026-11-16 要求）；程式內部代號仍為 A／B（RUN_A、-A、v3a）
 # 舊版測試（逐階加壓正式壓測、對話回應時間測試）收在「9) 其他測試」。
 # 底層呼叫 k6suite／k6ctl；進階操作仍可直接用指令（k6suite help、k6ctl help）。
 # 以 k6 帳號執行；其他帳號執行時會自動 sudo -u k6。
@@ -49,7 +50,7 @@ confirm() { # confirm <提示>：輸入 yes 才回傳 0
     return 1
 }
 
-# 舊版測試的最近一輪（不含 v3 測試的腳本 A／B，那些由 k6suite 管理）
+# 舊版測試的最近一輪（不含 v3 測試的腳本甲／乙＝-A／-B，那些由 k6suite 管理）
 latest_run() { ls -1t "${DATA_DIR}/runs" 2>/dev/null | grep -Ev -- '-v3.*-[AB]$' | head -1; }
 
 # 0 全部結束、1 執行中、2 有 runner 異常、3 沒有紀錄
@@ -125,14 +126,17 @@ header() {
 
 menu() {
     echo "   1) 壓測前檢查        （每次測試前先做，約 1 分鐘）"
-    echo "   2) 試跑 A→B          （低流量，確認流程與報表正常，約 $(suite_minutes smoke) 分鐘）"
-    echo "   3) 正式測試 1 倍     （A 業務查詢 → B FAQ 問答 → 報表，約 $(suite_minutes x1) 分鐘）"
-    echo "   4) 正式測試 3 倍     （A 業務查詢 → B FAQ 問答 → 報表，約 $(suite_minutes x3) 分鐘）"
+    echo "   2) 試跑 甲→乙        （低流量，確認流程與報表正常，約 $(suite_minutes smoke) 分鐘）"
+    echo "   3) 正式測試 1 倍     （甲 業務查詢 → 乙 FAQ 問答 → 報表，約 $(suite_minutes x1) 分鐘）"
+    echo "   4) 正式測試 3 倍     （甲 業務查詢 → 乙 FAQ 問答 → 報表，約 $(suite_minutes x3) 分鐘）"
     echo "   5) 查看進度"
     echo "   6) 停止測試"
     echo "   7) 取得報表"
     echo "   8) 打包問題資料      （有問題時，把產生的檔案寄給${CONTACT}）"
     echo "   9) 其他測試          （舊版：逐階加壓正式壓測、對話回應時間測試）"
+    echo "  10) 調整設定          （回應時間門檻、失敗率門檻、休息時間）"
+    echo "  11) 管理測試問句      （查看或修改每個情境的問句）"
+    echo "  12) 使用說明          （每個按鈕在做什麼、目前的設定）"
     echo "   0) 離開"
     line
 }
@@ -394,7 +398,7 @@ do_support() {
     pause
 }
 
-# ---------- v3 分開測試（腳本 A 業務查詢 → 休息 → 腳本 B FAQ 問答 → 合併報表） ----------
+# ---------- v3 分開測試（腳本甲 業務查詢 → 休息 → 腳本乙 FAQ 問答 → 合併報表） ----------
 suite_running() { "$K6SUITE" running 2>/dev/null; }
 latest_suite() { ls -1t "${DATA_DIR}/suites" 2>/dev/null | head -1; }
 
@@ -441,6 +445,12 @@ case_list() { # case_list 'B2:28;B5:2' → B2 FAQ 問答 93%、B5 Model Armor �
     echo "$out"
 }
 
+dur_text() { # 3m → 3 分鐘、20s → 20 秒（k6 的時間格式）
+    case "$1" in
+        *m) echo "${1%m} 分鐘" ;; *s) echo "${1%s} 秒" ;; *h) echo "${1%h} 小時" ;; *) echo "$1" ;;
+    esac
+}
+
 plan_words() { # x3:354tps:10:1 → 爬升 1 分鐘到 354 TPS，固定負載 10 分鐘
     local entry id load hold ramp out=""
     IFS=';' read -r -a entries <<< "$1"
@@ -464,19 +474,19 @@ do_v3() { # do_v3 smoke|x1|x3
         pause; return
     fi
     case "$kind" in
-        smoke) title="試跑 A→B（低流量）" ;;
+        smoke) title="試跑 甲→乙（低流量）" ;;
         x1) title="正式測試 1 倍" ;;
         x3) title="正式測試 3 倍" ;;
     esac
     echo
     echo "  ${B}${title}${N}：以下步驟會自動依序完成，中途不需要操作。"
     echo
-    echo "   ① 腳本 A 業務查詢（$(case_list "$V3_A_WEIGHTS")）"
+    echo "   ① 腳本甲 業務查詢（$(case_list "$V3_A_WEIGHTS")）"
     echo "      $(plan_words "$(plan_for "$kind" A)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_A_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
     echo "   ② 休息 ${V3_GAP_MIN} 分鐘"
-    echo "   ③ 腳本 B FAQ 問答（$(case_list "$V3_B_WEIGHTS")）"
+    echo "   ③ 腳本乙 FAQ 問答（$(case_list "$V3_B_WEIGHTS")）"
     echo "      $(plan_words "$(plan_for "$kind" B)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_B_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
-    echo "   ④ 產生合併報表（A、B 分開呈現）"
+    echo "   ④ 產生合併報表（甲、乙分開呈現）"
     echo
     echo "  受測端　：${BASE_URL}"
     echo "  預計時間：約 $(suite_minutes "$kind") 分鐘，約 $(date -d "+$(suite_minutes "$kind") min" +%H:%M) 完成"
@@ -484,20 +494,20 @@ do_v3() { # do_v3 smoke|x1|x3
         echo
         echo "  遇到嚴重異常時要自動停止嗎？"
         if [ "$abort" = true ]; then
-            echo "   1) 自動停止：開始 ${V3_ABORT_DELAY} 後，失敗率超過 $(awk -v r="$V3_ABORT_FAIL_RATE" 'BEGIN { printf "%g", r * 100 }')% 就停止該支腳本（預設）"
+            echo "   1) 自動停止：開始 $(dur_text "$V3_ABORT_DELAY") 後，失敗率超過 $(awk -v r="$V3_ABORT_FAIL_RATE" 'BEGIN { printf "%g", r * 100 }')% 就停止該支腳本（預設）"
             echo "   2) 不停，一律跑完"
             read -r -p "  請選擇 [1]：" ans
             [ "$ans" = 2 ] && abort=false
         else
             echo "   1) 不停，一律跑完（預設，直接按 Enter）"
-            echo "   2) 自動停止：開始 ${V3_ABORT_DELAY} 後，失敗率超過 $(awk -v r="$V3_ABORT_FAIL_RATE" 'BEGIN { printf "%g", r * 100 }')% 就停止該支腳本"
+            echo "   2) 自動停止：開始 $(dur_text "$V3_ABORT_DELAY") 後，失敗率超過 $(awk -v r="$V3_ABORT_FAIL_RATE" 'BEGIN { printf "%g", r * 100 }')% 就停止該支腳本"
             read -r -p "  請選擇 [1]：" ans
             [ "$ans" = 2 ] && abort=true
         fi
         if [ "$abort" = true ]; then
-            echo "  → 自動停止：開啟。A 被自動停止時，休息後照樣跑 B。"
+            echo "  → 自動停止：開啟。腳本甲被自動停止時，休息後照樣跑腳本乙。"
         else
-            echo "  → 自動停止：關閉，A、B 都會跑完。"
+            echo "  → 自動停止：關閉，甲、乙都會跑完。"
         fi
         warn "請確認：已先試跑成功、受測端負責人已同意、監控人員已就位。"
     fi
@@ -552,7 +562,7 @@ do_stop() {
     if suite="$(suite_running)"; then
         echo
         echo "  執行中：${suite}　$("$K6SUITE" brief "$suite")"
-        echo "  停止後 A、B 都不會再跑（還沒跑的腳本不會開始），會用停止前的數據產生報表。"
+        echo "  停止後甲、乙都不會再跑（還沒跑的腳本不會開始），會用停止前的數據產生報表。"
         confirm "停止後這一組無法繼續，只能重新開始。" || { pause; return; }
         "$K6SUITE" stop "$suite"
         echo
@@ -598,6 +608,309 @@ do_report() {
     pause
 }
 
+# ---------- 10. 調整設定（門檻、休息時間） ----------
+# 寫進客戶自己的 /etc/k6-stress/stress.env（覆蓋 defaults.env）；更新程式版本不會被蓋掉。改完從下一組測試開始生效
+SETTINGS_LOG="${DATA_DIR}/settings-history.log"
+# 代號|名稱|單位|換算（ms＝輸入秒存毫秒、pct＝輸入 % 存比例、raw＝原值）|最小|最大
+SETTINGS=(
+    "V3_A_MAX_MS|腳本甲 業務查詢 回應時間門檻（p95）|秒|ms|1|120"
+    "V3_B_MAX_MS|腳本乙 FAQ 問答 回應時間門檻（p95）|秒|ms|1|120"
+    "V3_FAIL_RATE|對話失敗率門檻|%|pct|0|100"
+    "V3_ABORT_FAIL_RATE|自動停止的失敗率（開始前選擇開啟時才用）|%|pct|0.1|100"
+    "V3_GAP_MIN|甲、乙之間休息時間|分鐘|raw|0|30"
+)
+
+to_display() { # to_display <換算> <存的值>
+    case "$1" in
+        ms) awk -v v="$2" 'BEGIN { printf "%g", v / 1000 }' ;;
+        pct) awk -v v="$2" 'BEGIN { printf "%g", v * 100 }' ;;
+        *) echo "$2" ;;
+    esac
+}
+
+to_stored() { # to_stored <換算> <輸入的值>
+    case "$1" in
+        ms) awk -v v="$2" 'BEGIN { printf "%d", v * 1000 + 0.5 }' ;;
+        pct) awk -v v="$2" 'BEGIN { printf "%g", v / 100 }' ;;
+        *) echo "$2" ;;
+    esac
+}
+
+default_of() { (set -a; . "${APP_DIR}/onprem/config/defaults.env"; eval "echo \"\${$1}\""); }
+
+conf_set() { # conf_set <代號> <值>：stress.env 有這行就改，沒有就加在最後
+    if grep -q "^$1=" "$CONF_FILE"; then
+        sed -i "s|^$1=.*|$1=$2|" "$CONF_FILE"
+    else
+        [ -s "$CONF_FILE" ] && [ -n "$(tail -c1 "$CONF_FILE")" ] && echo >> "$CONF_FILE"  # 最後一行沒有換行時先補上
+        printf '%s=%s\n' "$1" "$2" >> "$CONF_FILE"
+    fi
+}
+
+settings_log() { echo "$(date '+%Y-%m-%d %H:%M:%S') ${SUDO_USER:-$(id -un)} $*" >> "$SETTINGS_LOG"; }
+
+do_settings() {
+    local choice i item key name unit conv min max cur def input stored sep
+    while true; do
+        load_config
+        clear 2>/dev/null || true
+        line
+        echo "  ${B}調整設定${N}　改完從${B}下一組測試${N}開始生效，正在跑的測試不受影響。"
+        echo "  報表會列出每一組測試當時用的設定。"
+        line
+        printf '       %s  %s  %s\n' "$(pad '項目' 44)" "$(pad '目前值' 10)" "預設值"
+        for i in "${!SETTINGS[@]}"; do
+            IFS='|' read -r key name unit conv min max <<< "${SETTINGS[$i]}"
+            sep=" "; [ "$unit" = % ] && sep=""
+            cur="$(to_display "$conv" "${!key}")${sep}${unit}"; def="$(to_display "$conv" "$(default_of "$key")")${sep}${unit}"
+            [ "$cur" != "$def" ] && cur="${Y}${cur}${N}"
+            printf '   %2d) %s  %s  %s\n' $((i + 1)) "$(pad "$name" 44)" "$(pad "$cur" 10)" "$def"
+        done
+        echo
+        echo "    9) 全部恢復預設值"
+        echo "    0) 回主選單"
+        line
+        [ -f "$SETTINGS_LOG" ] && echo "  最近一次修改：$(tail -1 "$SETTINGS_LOG")"
+        read -r -p "  請輸入要調整的項目：" choice || return
+        case "$choice" in
+            0|q|Q|'') return ;;
+            9)
+                confirm "全部恢復預設值（${#SETTINGS[@]} 項）。" || { pause; continue; }
+                for item in "${SETTINGS[@]}"; do
+                    key="${item%%|*}"
+                    sed -i "/^${key}=/d" "$CONF_FILE"
+                done
+                settings_log "全部恢復預設值"
+                ok "已恢復預設值。"; pause ;;
+            [1-9])
+                [ "$choice" -le "${#SETTINGS[@]}" ] || continue
+                IFS='|' read -r key name unit conv min max <<< "${SETTINGS[$((choice - 1))]}"
+                cur="$(to_display "$conv" "${!key}")"
+                echo
+                echo "  ${B}${name}${N}"
+                echo "  目前 ${cur} ${unit}（預設 $(to_display "$conv" "$(default_of "$key")") ${unit}），可輸入 ${min}～${max}"
+                read -r -p "  請輸入新的值（單位：${unit}；直接按 Enter＝不改）：" input || return
+                input="${input// /}"; input="${input%${unit}}"
+                [ -n "$input" ] || continue
+                if ! [[ "$input" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! awk -v v="$input" -v a="$min" -v b="$max" 'BEGIN { exit !(v >= a && v <= b) }'; then
+                    bad "「${input}」不是 ${min}～${max} 之間的數字，沒有修改。"; pause; continue
+                fi
+                confirm "${name}：${cur} ${unit} → ${input} ${unit}。" || { pause; continue; }
+                stored="$(to_stored "$conv" "$input")"
+                conf_set "$key" "$stored"
+                settings_log "${key} ${!key} → ${stored}（${name} ${cur} → ${input} ${unit}）"
+                ok "已修改，下一組測試開始生效。"; pause ;;
+        esac
+    done
+}
+
+# ---------- 11. 管理測試問句 ----------
+# 改的是客戶自己的 /etc/k6-stress/questions.json（第一次修改時從程式附的問句複製）；k6ctl start 會用這份同步到 runner
+QUESTIONS_FILE="$(dirname "$CONF_FILE")/questions.json"
+DEFAULT_QUESTIONS="${APP_DIR}/runner/k6/data/questions.json"
+CASES=("B1|開場問候" "B2-2|FAQ intent" "C1|查看 ETF 清單" "B2|FAQ 問答" "B3|多輪對話" "B4|知識庫以外問題" "B5|Model Armor 攔截")
+
+qpy() { # qpy <動作> <參數…>：讀寫問句 JSON（格式檢查、每個情境至少一句）
+    local py="${APP_DIR}/venv/bin/python3"
+    [ -x "$py" ] || py=python3
+    "$py" - "$@" <<'PY'
+import json, os, sys
+act, path = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as f:
+    q = json.load(f)
+def save():
+    keys = [k for k in q if k != "_note"]
+    lines = ["{"] + ([f'  "_note": {json.dumps(q["_note"], ensure_ascii=False)},'] if "_note" in q else [])
+    lines += [f'  {json.dumps(k, ensure_ascii=False)}: {json.dumps(q[k], ensure_ascii=False)}' + ("," if i < len(keys) - 1 else "") for i, k in enumerate(keys)]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines + ["}"]) + "\n")
+    os.replace(tmp, path)
+if act == "count":
+    print(len(q.get(sys.argv[3], [])))
+elif act == "list":
+    for i, x in enumerate(q.get(sys.argv[3], []), 1):
+        print(f"     {i}. {x}")
+else:
+    case, items = sys.argv[3], q.setdefault(sys.argv[3], [])
+    if act == "add":
+        items.append(sys.argv[4])
+    elif act in ("set", "del"):
+        i = int(sys.argv[4]) - 1
+        if not 0 <= i < len(items):
+            sys.exit("沒有這個編號")
+        if act == "set":
+            items[i] = sys.argv[5]
+        else:
+            if len(items) <= 1:
+                sys.exit("每個情境至少要留一句，不能刪除最後一句")
+            items.pop(i)
+    save()
+PY
+}
+
+case_used_in() { # 這個情境用在哪支腳本
+    local id="$1"
+    [ "$id" = B1 ] && { echo "每位訪客開頭（不計入統計）"; return; }
+    grep -Eq "(^|;)${id}:" <<< "$V3_A_WEIGHTS" && { echo "腳本甲"; return; }
+    grep -Eq "(^|;)${id}:" <<< "$V3_B_WEIGHTS" && { echo "腳本乙"; return; }
+    echo "目前沒有使用"
+}
+
+case_hint() {
+    case "$1" in
+        B1) echo "訪客進入聊天時自動送出的招呼。" ;;
+        B2-2) echo "會觸發 FAQ intent（業務查詢）的問句。" ;;
+        C1) echo "會帶出 ETF 相關業務查詢的問句。" ;;
+        B2) echo "一般 FAQ 問題（由 AI 生成回覆）。" ;;
+        B3) echo "多輪對話的追問；每則提問從中隨機抽一句。" ;;
+        B4) echo "知識庫以外的問題（例如閒聊），AI 應回覆無法回答。" ;;
+        B5) echo "${Y}必須是會被 Model Armor 攔截的內容，否則每一則都會算失敗。${N}" ;;
+    esac
+}
+
+read_question() { # read_question <提示>：讀一行問句，檢查不是空的、不太長
+    local text
+    read -r -p "  $1" text || return 1
+    text="$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<< "$text")"
+    [ -n "$text" ] || return 1
+    if [ "${#text}" -gt 200 ]; then bad "問句太長（超過 200 字），沒有修改。"; return 1; fi
+    QUESTION="$text"
+}
+
+do_questions() {
+    local choice i id name src
+    while true; do
+        load_config
+        clear 2>/dev/null || true
+        line
+        echo "  ${B}管理測試問句${N}　改完從${B}下一組測試${N}開始生效（甲乙測試、舊版測試都會用到）。"
+        if [ -f "$QUESTIONS_FILE" ]; then
+            src="$QUESTIONS_FILE"
+            echo "  目前使用：${Y}已修改的問句${N}（最後修改 $(date -r "$QUESTIONS_FILE" '+%Y-%m-%d %H:%M')）"
+        else
+            src="$DEFAULT_QUESTIONS"
+            echo "  目前使用：程式附的預設問句"
+        fi
+        line
+        printf '       %s  %s  %s\n' "$(pad '情境' 26)" "$(pad '問句數' 6)" "用在"
+        for i in "${!CASES[@]}"; do
+            id="${CASES[$i]%%|*}"; name="${CASES[$i]#*|}"
+            printf '   %2d) %s  %s  %s\n' $((i + 1)) "$(pad "${id} ${name}" 26)" "$(pad "$(qpy count "$src" "$id")" 6)" "$(case_used_in "$id")"
+        done
+        echo
+        echo "    9) 恢復預設問句"
+        echo "    0) 回主選單"
+        line
+        echo "  改完建議先在新阿發網頁實際問一次確認回應正常，再選主選單 2 試跑。"
+        read -r -p "  請輸入要查看或修改的情境：" choice || return
+        case "$choice" in
+            0|q|Q|'') return ;;
+            9)
+                [ -f "$QUESTIONS_FILE" ] || { echo; echo "  目前就是預設問句。"; pause; continue; }
+                confirm "恢復預設問句（目前修改過的問句會備份成 questions.json.bak）。" || { pause; continue; }
+                mv "$QUESTIONS_FILE" "${QUESTIONS_FILE}.bak"
+                settings_log "問句恢復預設（舊的備份在 ${QUESTIONS_FILE}.bak）"
+                ok "已恢復預設問句。"; pause ;;
+            [1-7]) do_question_case "${CASES[$((choice - 1))]}" ;;
+        esac
+    done
+}
+
+do_question_case() { # do_question_case "<代號>|<名稱>"
+    local id="${1%%|*}" name="${1#*|}" act n src err
+    while true; do
+        src="$DEFAULT_QUESTIONS"; [ -f "$QUESTIONS_FILE" ] && src="$QUESTIONS_FILE"
+        clear 2>/dev/null || true
+        line
+        echo "  ${B}${id} ${name}${N}（$(case_used_in "$id")）"
+        echo "  $(case_hint "$id")"
+        line
+        qpy list "$src" "$id"
+        echo
+        echo "   a) 新增問句   e) 修改問句   d) 刪除問句   0) 回上一層"
+        line
+        read -r -p "  請選擇：" act || return
+        case "$act" in
+            0|q|Q|'') return ;;
+            a|A|e|E|d|D)
+                # 第一次修改：從預設問句複製一份到客戶自己的設定目錄
+                [ -f "$QUESTIONS_FILE" ] || cp "$DEFAULT_QUESTIONS" "$QUESTIONS_FILE"
+                case "$act" in
+                    a|A)
+                        read_question "請輸入新的問句（直接按 Enter＝取消）：" || continue
+                        err="$(qpy add "$QUESTIONS_FILE" "$id" "$QUESTION" 2>&1)" && settings_log "問句 ${id} 新增：${QUESTION}" ;;
+                    e|E)
+                        read -r -p "  要修改第幾句：" n || return
+                        [[ "$n" =~ ^[0-9]+$ ]] || continue
+                        read_question "請輸入修改後的問句（直接按 Enter＝取消）：" || continue
+                        err="$(qpy set "$QUESTIONS_FILE" "$id" "$n" "$QUESTION" 2>&1)" && settings_log "問句 ${id} 第 ${n} 句改為：${QUESTION}" ;;
+                    d|D)
+                        read -r -p "  要刪除第幾句：" n || return
+                        [[ "$n" =~ ^[0-9]+$ ]] || continue
+                        confirm "刪除 ${id} 第 ${n} 句。" || { pause; continue; }
+                        err="$(qpy del "$QUESTIONS_FILE" "$id" "$n" 2>&1)" && settings_log "問句 ${id} 刪除第 ${n} 句" ;;
+                esac
+                if [ -n "${err:-}" ]; then bad "$(tail -1 <<< "$err")"; else ok "已儲存，下一組測試開始生效。"; fi
+                err=""
+                pause ;;
+        esac
+    done
+}
+
+# ---------- 12. 使用說明 ----------
+do_help() {
+    load_config
+    clear 2>/dev/null || true
+    line
+    echo "  ${B}使用說明（1/2）：怎麼操作${N}"
+    line
+    cat <<EOF
+  建議順序：1 壓測前檢查 → 2 試跑 → 3 或 4 正式測試 → 7 取得報表
+
+   1) 壓測前檢查   確認 control、runner 與受測端的連線。每次測試前先做，約 1 分鐘。
+   2) 試跑 甲→乙   低流量把整個流程跑一遍（含報表），確認一切正常再做正式測試。
+   3) 正式測試 1 倍 / 4) 正式測試 3 倍
+                   依序自動完成：腳本甲 業務查詢 → 休息 → 腳本乙 FAQ 問答 → 合併報表。
+                   在背景執行，關閉視窗或斷線都不會中斷；開始前可選擇是否自動停止。
+   5) 查看進度     目前跑到哪支腳本、哪個階段、預計幾點完成；每 10 秒自動更新。
+   6) 停止測試     整組停止（還沒跑的腳本不會開始），用停止前的數據產生報表。
+   7) 取得報表     顯示報表檔案位置；也可以重新產生。報表用瀏覽器開啟，不需要連網。
+   8) 打包問題資料 有問題時把產生的檔案寄給 ${CONTACT}。
+   9) 其他測試     舊版測試（逐階加壓正式壓測、對話回應時間測試）。
+  10) 調整設定     回應時間門檻、失敗率門檻、休息時間。
+  11) 管理測試問句 查看或修改每個情境的問句。
+EOF
+    echo
+    read -r -p "  按 Enter 看下一頁（目前的設定）…" _ || return
+    clear 2>/dev/null || true
+    line
+    echo "  ${B}使用說明（2/2）：目前的設定${N}（在 10、11 可以修改）"
+    line
+    echo "  腳本甲 業務查詢：$(case_list "$V3_A_WEIGHTS")"
+    echo "      負載：1 倍 $(plan_words "$V3_PLAN_X1_A")；3 倍 $(plan_words "$V3_PLAN_X3_A")"
+    echo "      門檻：回應時間 p${V3_LATENCY_PCT} ≤ $(to_display ms "$V3_A_MAX_MS") 秒、對話失敗率 ≤ $(to_display pct "$V3_FAIL_RATE")%"
+    echo "  腳本乙 FAQ 問答：$(case_list "$V3_B_WEIGHTS")"
+    echo "      負載：1 倍 $(plan_words "$V3_PLAN_X1_B")；3 倍 $(plan_words "$V3_PLAN_X3_B")"
+    echo "      門檻：回應時間 p${V3_LATENCY_PCT} ≤ $(to_display ms "$V3_B_MAX_MS") 秒、對話失敗率 ≤ $(to_display pct "$V3_FAIL_RATE")%"
+    echo "  甲、乙之間休息：${V3_GAP_MIN} 分鐘"
+    echo "  自動停止（開始前選擇）：開啟時，開始 $(dur_text "$V3_ABORT_DELAY") 後失敗率超過 $(to_display pct "$V3_ABORT_FAIL_RATE")% 就停止該支腳本"
+    echo "  問句：$([ -f "$QUESTIONS_FILE" ] && echo "已修改（${QUESTIONS_FILE}）" || echo "程式附的預設問句")"
+    echo
+    echo "  判定：回應時間 p${V3_LATENCY_PCT} 與對話失敗率兩項都在門檻內才算「通過」。"
+    echo "  p${V3_LATENCY_PCT}＝${V3_LATENCY_PCT}% 的對話都在這個時間內回覆；只看爬升到目標 TPS 之後的固定負載期間。"
+    echo "  報表位置：${DATA_DIR}/suites/<測試編號>/reports/report-<測試編號>.html"
+    pause
+}
+
+# 中文字佔兩格：依顯示寬度補空白（去掉顏色碼再算）
+pad() {
+    local plain w
+    plain="$(sed 's/\x1b\[[0-9;]*m//g' <<< "$1")"
+    w="$(printf '%s' "$plain" | LC_ALL=C.UTF-8 wc -L 2>/dev/null)" || w=${#plain}
+    printf '%s%*s' "$1" $(( $2 - w > 0 ? $2 - w : 0 )) ''
+}
+
 # ---------- 主程式 ----------
 load_config
 while true; do
@@ -614,6 +927,9 @@ while true; do
         7) do_report ;;
         8) do_support ;;
         9) do_old_menu ;;
+        10) do_settings ;;
+        11) do_questions ;;
+        12|h|H|help|'?') do_help ;;
         0|q|Q) echo; exit 0 ;;
         *) ;;
     esac

@@ -20,6 +20,8 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/opt/k6-stress}"
 DATA_DIR="${DATA_DIR:-/var/lib/k6-stress}"
 CONF_FILE="${CONF_FILE:-/etc/k6-stress/stress.env}"
+# 客戶在 k6menu 修改過的問句（沒有這個檔＝用程式附的 runner/k6/data/questions.json）
+QUESTIONS_FILE="${QUESTIONS_FILE:-$(dirname "$CONF_FILE")/questions.json}"
 K6_USER="${K6_USER:-k6}"
 
 if [ "$(id -un)" != "$K6_USER" ] && [ -z "${K6CTL_NO_SUDO:-}" ]; then
@@ -136,6 +138,7 @@ sync_one() {
         rsync -a --delete "${APP_DIR}/onprem/" "${RUNNER_SSH_USER}@${host}:${APP_DIR}/onprem/" &&
         rssh "$host" "mkdir -p ${DATA_DIR}/runs/${RUN_ID}" &&
         rsync -a "${RUN_DIR}/run.env" "${RUNNER_SSH_USER}@${host}:${DATA_DIR}/runs/${RUN_ID}/run.env" &&
+        rsync -a "${RUN_DIR}/questions.json" "${RUNNER_SSH_USER}@${host}:${APP_DIR}/runner/k6/data/questions.json" &&
         echo "  ${host} 已同步" || echo "  ${host} 同步失敗"
 }
 
@@ -201,6 +204,13 @@ cmd_start() {
         for arg in "${overrides[@]}"; do printf '%s=%q\n' "${arg%%=*}" "${arg#*=}"; done
         echo "RUN_ID=${RUN_ID}"
     } > "${RUN_DIR}/run.env"
+    # 這一輪用的問句：客戶改過的優先；留一份在 RUN_DIR（報表附錄列出、事後可查），同步時覆蓋 runner 上的問句檔
+    if [ -f "$QUESTIONS_FILE" ]; then
+        cp "$QUESTIONS_FILE" "${RUN_DIR}/questions.json"
+        echo "  問句       : ${QUESTIONS_FILE}（k6menu 修改過）"
+    else
+        cp "${APP_DIR}/runner/k6/data/questions.json" "${RUN_DIR}/questions.json"
+    fi
 
     log "同步程式與參數到 runner"
     local sync_out

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # v3 分開測試（客戶 2026-11-13 確認）的串接，在 control 背景執行：
-#   腳本 A 業務查詢 → 休息 V3_GAP_MIN 分鐘 → 腳本 B FAQ 問答 → 合併報表（一份 HTML，A、B 分區）
+#   腳本甲 業務查詢 → 休息 V3_GAP_MIN 分鐘 → 腳本乙 FAQ 問答 → 合併報表（一份 HTML，甲、乙分區）
+# 對客戶一律稱「腳本甲／乙」（客戶 2026-11-16 要求）；程式內部代號仍為 A／B（RUN_A、runs/<SUITE_ID>-A、v3a）
 # 通常由 k6menu 操作；指令：
 #   k6suite start <smoke|x1|x3> [--abort|--no-abort]   背景開始一組測試，立即返回（關閉視窗、斷線都不影響）
 #   k6suite progress [SUITE_ID]                        目前做到哪（k6menu 的進度畫面）
-#   k6suite stop [SUITE_ID]                            整組停止（A、B 都不再跑），仍會用停止前的數據產生報表
+#   k6suite stop [SUITE_ID]                            整組停止（甲、乙都不再跑），仍會用停止前的數據產生報表
 #   k6suite report [SUITE_ID]                          重新產生合併報表
 #   k6suite running                                    有執行中的一組時印出 SUITE_ID（回傳 0），否則回傳 1
 #   k6suite list                                       列出所有測試編號
@@ -36,8 +37,8 @@ load_config() {
     set +a
 }
 
-part_name() { case "$1" in A) echo "腳本 A 業務查詢" ;; B) echo "腳本 B FAQ 問答" ;; esac; }
-kind_name() { case "$1" in smoke) echo "試跑 A→B" ;; x1) echo "正式測試 1 倍" ;; x3) echo "正式測試 3 倍" ;; *) echo "$1" ;; esac; }
+part_name() { case "$1" in A) echo "腳本甲 業務查詢" ;; B) echo "腳本乙 FAQ 問答" ;; esac; }
+kind_name() { case "$1" in smoke) echo "試跑 甲→乙" ;; x1) echo "正式測試 1 倍" ;; x3) echo "正式測試 3 倍" ;; *) echo "$1" ;; esac; }
 
 # ---------- 測試計畫 ----------
 plan_for() { # plan_for <kind> <A|B>
@@ -251,7 +252,7 @@ cmd_run() { # 背景執行，由 cmd_start 啟動
     log "開始 ${SUITE_ID}（$(kind_name "$KIND")）A=${PLAN_A} B=${PLAN_B} 休息 ${GAP_MIN} 分鐘 自動停止=${ABORT}"
 
     if ! run_part A; then
-        set_state PHASE done FINAL error B_REASON skipped DONE_AT "$(date +%s)" MESSAGE "腳本 A 無法啟動，整組未執行（請看 orchestrator.log）"
+        set_state PHASE done FINAL error B_REASON skipped DONE_AT "$(date +%s)" MESSAGE "腳本甲無法啟動，整組未執行（請看 orchestrator.log）"
         return 1
     fi
 
@@ -265,7 +266,7 @@ cmd_run() { # 背景執行，由 cmd_start 啟動
         if stop_requested; then
             set_state B_REASON skipped
         else
-            run_part B || set_state MESSAGE "腳本 B 無法啟動（請看 orchestrator.log）"
+            run_part B || set_state MESSAGE "腳本乙無法啟動（請看 orchestrator.log）"
         fi
     fi
 
@@ -403,7 +404,7 @@ cmd_progress() {
         if [ "$p" = A ]; then
             if [ "$PHASE" = gap ]; then
                 el=$((now - GAP_START))
-                item 1 "休息 ${GAP_MIN} 分鐘" "${Y}${B}休息中${N}　剩 $(mmss $(( gap_s - el > 0 ? gap_s - el : 0 )))（讓 A 的影響消退，B 的數據才乾淨）"
+                item 1 "休息 ${GAP_MIN} 分鐘" "${Y}${B}休息中${N}　剩 $(mmss $(( gap_s - el > 0 ? gap_s - el : 0 )))（讓腳本甲的影響消退，腳本乙的數據才乾淨）"
             elif [ -n "$B_START" ] || { [ -n "$GAP_START" ] && [ "$PHASE" != A ]; }; then
                 item 0 "休息 ${GAP_MIN} 分鐘" "${G}✓${N}"
             elif [ -n "$B_REASON" ] || stop_requested; then
@@ -430,8 +431,8 @@ cmd_progress() {
             *) echo "  ${R}${B}整組測試異常結束${N}${MESSAGE:+：${MESSAGE}}" ;;
         esac
         if [ -f "${SDIR}/reports/verdict.env" ]; then
-            echo "    腳本 A 業務查詢：$(verdict_line A)"
-            echo "    腳本 B FAQ 問答：$(verdict_line B)"
+            echo "    腳本甲 業務查詢：$(verdict_line A)"
+            echo "    腳本乙 FAQ 問答：$(verdict_line B)"
         fi
         [ -n "$REPORT" ] && echo "  報表：${B}${REPORT}${N}"
     elif ! $alive && [ "$PHASE" != starting ]; then
@@ -453,10 +454,10 @@ cmd_brief() {
     load_suite
     case "$PHASE" in
         starting) echo "啟動中" ;;
-        A) echo "目前：腳本 A 業務查詢執行中（1/2）" ;;
-        gap) echo "目前：A 已結束，休息中，接著跑腳本 B" ;;
-        B) echo "目前：腳本 B FAQ 問答執行中（2/2）" ;;
-        report) echo "目前：A、B 都已結束，正在產生合併報表" ;;
+        A) echo "目前：腳本甲 業務查詢執行中（1/2）" ;;
+        gap) echo "目前：腳本甲已結束，休息中，接著跑腳本乙" ;;
+        B) echo "目前：腳本乙 FAQ 問答執行中（2/2）" ;;
+        report) echo "目前：甲、乙都已結束，正在產生合併報表" ;;
         done) echo "已結束" ;;
     esac
 }
