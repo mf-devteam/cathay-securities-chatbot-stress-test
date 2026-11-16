@@ -426,6 +426,21 @@ suite_minutes() { # 整組：A＋休息＋B＋報表約 2 分鐘
     awk -v a="$a" -v b="$b" -v g="${V3_GAP_MIN:-2}" 'BEGIN { printf "%d", a + g + b + 2 }'
 }
 
+case_list() { # case_list 'B2:28;B5:2' → B2 FAQ 問答 93%、B5 Model Armor 攔截 7%
+    local entry id w total=0 out=""
+    IFS=';' read -r -a entries <<< "$1"
+    for entry in "${entries[@]}"; do total=$(awk -v t="$total" -v w="${entry#*:}" 'BEGIN { print t + w }'); done
+    for entry in "${entries[@]}"; do
+        id="${entry%%:*}"; w="${entry#*:}"
+        case "$id" in
+            B2) name="FAQ 問答" ;; B2-2) name="FAQ intent" ;; B3) name="多輪對話" ;; B4) name="知識庫以外問題" ;;
+            B5) name="Model Armor 攔截" ;; C1) name="查看 ETF 清單" ;; *) name="" ;;
+        esac
+        out+="${out:+、}${id}${name:+ ${name}} $(awk -v w="$w" -v t="$total" 'BEGIN { printf "%.0f", w / t * 100 }')%"
+    done
+    echo "$out"
+}
+
 plan_words() { # x3:354tps:10:1 → 爬升 1 分鐘到 354 TPS，固定負載 10 分鐘
     local entry id load hold ramp out=""
     IFS=';' read -r -a entries <<< "$1"
@@ -456,10 +471,10 @@ do_v3() { # do_v3 smoke|x1|x3
     echo
     echo "  ${B}${title}${N}：以下步驟會自動依序完成，中途不需要操作。"
     echo
-    echo "   ① 腳本 A 業務查詢（B2-2 FAQ intent、C1 查看 ETF 清單）"
+    echo "   ① 腳本 A 業務查詢（$(case_list "$V3_A_WEIGHTS")）"
     echo "      $(plan_words "$(plan_for "$kind" A)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_A_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
     echo "   ② 休息 ${V3_GAP_MIN} 分鐘"
-    echo "   ③ 腳本 B FAQ 問答（B2 FAQ 問答、B3 多輪對話、B4 知識庫以外問題、B5 Model Armor 攔截）"
+    echo "   ③ 腳本 B FAQ 問答（$(case_list "$V3_B_WEIGHTS")）"
     echo "      $(plan_words "$(plan_for "$kind" B)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_B_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
     echo "   ④ 產生合併報表（A、B 分開呈現）"
     echo
