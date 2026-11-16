@@ -7,7 +7,7 @@
 //   - 每個 VU 扮演一位訪客：先開場問候（B1，照送但不計入統計），再問 8～11 則，問完換下一位訪客
 //   - 對話失敗＝回應不是預期結果（5xx、timeout、HTTP 429、業務錯誤），失敗後照樣繼續問
 //   - 指標名稱沿用 qa_failed／qa_opening_failed（報表 Job 共用）
-//   - 問句：data/questions_v3.json（v3 專用，與舊版腳本的 questions.json 分開）
+//   - 問句與舊版腳本共用 data/questions.json（只用到本腳本情境的問句）
 // 不同之處：
 //   - 每支腳本只抽自己的情境：A＝flow business（B2-2、C1），B＝flow faq（B2、B5；客戶 2026-11-16 拿掉 B3、B4）；
 //     情境與權重由 k6suite 以 SCENARIO_WEIGHTS 帶入（defaults.env 的 V3_A_WEIGHTS／V3_B_WEIGHTS），混到別類會直接報錯
@@ -60,7 +60,7 @@ export function buildPart(partId, loadQuestions) {
 
     const questions = new SharedArray(`questions-v3-${partId}`, () => [loadQuestions()]);
     for (const id of [OPENING.id, ...ACTIVE.map((s) => s.id)]) {
-        if (!Array.isArray(questions[0][id]) || questions[0][id].length === 0) throw new Error(`data/questions_v3.json 缺少情境 ${id} 的問句`);
+        if (!Array.isArray(questions[0][id]) || questions[0][id].length === 0) throw new Error(`data/questions.json 缺少情境 ${id} 的問句`);
     }
     const questionFor = (id) => {
         const list = questions[0][id];

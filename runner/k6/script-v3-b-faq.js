@@ -3,7 +3,7 @@
 import { buildPart } from './lib/v3.js';
 import { stageMarker } from './lib/stages.js';
 
-const part = buildPart('B', () => JSON.parse(open('./data/questions_v3.json')));
+const part = buildPart('B', () => JSON.parse(open('./data/questions.json')));
 
 export { stageMarker };
 export const options = part.options;
