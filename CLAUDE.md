@@ -1,0 +1,67 @@
+# CLAUDE.md
+
+國泰證券「新阿發」AI 客服的 k6 壓力測試工具。客戶＝證券方；我方＝MF（Microfusion）。
+一般說明見 [README.md](README.md)、[onprem/README.md](onprem/README.md)；這份檔案記錄**文件裡看不出來的背景、決策與地雷**。
+
+## 兩個版本
+
+| | 雲端版（Cloud Run Jobs） | 地端版（目前主力） |
+|---|---|---|
+| 位置 | `runner/`、`report-job/`、`infra/terraform/envs/lab` | `onprem/`（install.sh、k6ctl、k6menu、k6suite）；共用 `runner/k6` 與 `report-job` |
+| 環境 | GCP 多個 task 平行，數據放 GCS | 證券方 DMZ：3 台 runner＋1 台 control，RHEL 9.6、**離線安裝** |
+| 範圍 | 1 倍上限、「業務情境組合」Excel 黃色列 8 項 | 只測未登入訪客，打到 3 倍（354 TPS） |
+
+目前開發分支：`feature/onprem-new-scenarios-v3`（比 main 新很多，還沒合併）。
+
+## 地端版的三種測試（都在 k6menu）
+
+1. **v3 分開測試（主選單 1～8，目前客戶在用）：** 腳本甲＝業務查詢（B2-2、C1）→ 休息 → 腳本乙＝FAQ（B2、B3、B4、B5）→ 合併成一份 HTML 報表，甲、乙分開統計。
+   - 甲、乙各自打滿 118／354 TPS（**不依**占比拆）。
+   - 門檻 p95：甲 6 秒、乙 20 秒；失敗率暫定 0.5%（`V3_FAIL_RATE`）。
+   - 程式：`script-v3-a-business.js`、`script-v3-b-faq.js`、`lib/v3.js`、`report-job/v3_report.py`、`onprem/bin/k6suite`。
+   - **對客戶一律稱「腳本甲／乙」**，程式內部代號仍是 A／B。
+2. **對話回應時間測試（選單 9 → 子選單）：** `script-qa.js`、`qa_report.py`、`QA_*` 參數。
+3. **原始逐階加壓（選單 9 → 子選單）：** `script.js`，S0 5 → S1 30 → S2 118 → S3 354 → S4 30 TPS。
+
+- 問句共用 `runner/k6/data/questions.json`，**不要拆檔**。客戶可以在選單 11 修改 `/etc/k6-stress/questions.json`，`k6ctl start` 時會同步到 runner。
+- TPS＝聊天 API（`/api/chat/ask`）每秒請求數，包含開場問候。
+
+## 慣例
+
+- **參數一律走環境變數。** 列表參數用分號字串（`B2:28;C1:12`、`x1:118tps:10:1`），不用 JSON，因為 `gcloud --update-env-vars` 會用逗號切斷 JSON。`THRESHOLDS_JSON` 是唯一例外。新增參數時要同步更新 [runner/k6/README.md](runner/k6/README.md) 的參數一覽。
+- **預設值放 `onprem/config/defaults.env`**（跟著版本控管）；現場值寫在 control 的 `/etc/k6-stress/stress.env` 覆蓋，不要叫客戶改 defaults.env。
+- **新需求不要動到既有測試。** 加新測試時另開 script／report 檔，舊腳本、舊報告保持原樣（客戶要求）。
+- **寫給客戶的指令要能直接複製貼上**，不要放 `<編號>` 這類佔位符（客戶會原樣貼上）。用 `$(date …)`、`$(ls -1t … | head -1)` 自動帶入。客戶執行人員不熟指令，以 k6menu 操作為主。
+- **git add 要逐一列出檔案**，不要用 `git add -A` 或 `git add .`。根目錄有客戶的 xlsx／pdf，`logs/` 是客戶 log，都不能進 git。
+- 單元測試：`cd report-job && python3 -m unittest discover -s tests`
+
+## 地雷（踩過的）
+
+- **打包一定要從乾淨的 commit。** `build-in-docker.sh` 會把工作區未 commit 的修改一起包進去。做法：在家目錄下開乾淨的 worktree 再打包（colima 只掛載 home）。
+- **RHEL 驗證要用真的 RHEL 映像離線安裝**（GCE `rhel-9-v20250611`＝RHEL 9.6）。Rocky 容器和連網的 lab 都測不出套件衝突（10/27 客戶安裝時，Rocky 的 openssh 跟 RHEL 原廠衝突）。
+- 客戶 root 的 PATH 沒有 `/usr/local/bin` → 指令要用 `/usr/bin/k6ctl` 連結或寫完整路徑。
+- `k6ctl start` 不會擋「已經有一輪在跑」（k6menu 會擋），要先 `k6ctl status`。
+- exit code：`0` 通過、`99` 門檻沒過或自動中止、`105` 手動停止。看到 99 先查是哪個門檻觸發，不一定是工具壞掉。
+- `terraform apply` 會被 Claude 的 auto mode 擋下，請使用者自己執行。
+
+## 環境與權限
+
+- **lab＝`cfh-de-chatbot-lab`：** 我們唯一能自己操作的 GCP 專案。地端模擬在 `infra/terraform/envs/onprem-lab`（GCE VM＋mock），資源一律用 `k6` 前綴。
+- **SIT／UAT 是客戶環境，我們不能操作，也不要從 lab 打 SIT／UAT。** UAT 的 LB、Cloud Armor、Cloud Run 規格由證券方 infra 負責。
+- 對任何真實環境送流量前，都要先取得負責人同意。
+
+## 客戶 UAT 的已知狀況（2026-11-16）
+
+- 10/30～11/04 連線被拒：ISP DDoS 白名單已修好。
+- 11/11 BFF 排隊：客戶已調高 Cloud Run 規格。
+- 11/12 1 倍跑出大量 429：根因是 Cloud Run「沒有可用 instance」，測試當下的 revision 最大 instance 數＝3，設定沒生效。
+- 現況：bff、middleware 的 concurrency 還是 10（應該是 80）。**下次跑 1 倍／3 倍之前，要提醒客戶把 concurrency 改成 80，部署設定也要一起改**，否則重新部署會被蓋回去。
+- 容量估算：1 倍約 900、3 倍約 2,700 個同時請求；60 × 80 = 4,800 足夠。
+- 就算沒負載，業務 p95 也有 7～8 秒，主要是 LLM 慢。
+
+## 不在 repo 裡的資料（交接時另外提供）
+
+- 客戶 log：`logs/`（公司雲端硬碟），每次的分析寫在 `logs/<日期>/*_問題分析.md`。
+- 交付包與操作手冊：`~/Downloads/新阿發壓測工具_交付_<日期>/`。最新是 20261116：安裝包 `k6-stress-onprem-54f0049-el9.6-offline`＋手冊 v1.5（選單操作）。
+- 規劃文件：「新阿發 壓力測試規劃 v1.4」、「地端執行環境規劃 v1.0」、負載試算表。
+- 支援信箱：tsc-pdev.service@microfusion.cloud
