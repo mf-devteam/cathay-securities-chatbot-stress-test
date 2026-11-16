@@ -206,8 +206,16 @@ cmd_start() {
     } > "${RUN_DIR}/run.env"
     # 這一輪用的問句：客戶改過的優先；留一份在 RUN_DIR（報表附錄列出、事後可查），同步時覆蓋 runner 上的問句檔
     if [ -f "$QUESTIONS_FILE" ]; then
-        cp "$QUESTIONS_FILE" "${RUN_DIR}/questions.json"
-        echo "  問句       : ${QUESTIONS_FILE}（k6menu 修改過）"
+        # B1 開場問候不開放修改：一律用程式附的 B1（避免手動改檔案影響訪客流程）
+        python3 - "$QUESTIONS_FILE" "${APP_DIR}/runner/k6/data/questions.json" "${RUN_DIR}/questions.json" <<'PY' ||
+import json, sys
+custom, default, out = sys.argv[1:4]
+q = json.load(open(custom, encoding="utf-8"))
+q["B1"] = json.load(open(default, encoding="utf-8"))["B1"]
+json.dump(q, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PY
+            die "${QUESTIONS_FILE} 格式錯誤，請用 k6menu 11 修改，或刪除這個檔案改用預設問句"
+        echo "  問句       : ${QUESTIONS_FILE}（k6menu 修改過；B1 開場問候固定用預設）"
     else
         cp "${APP_DIR}/runner/k6/data/questions.json" "${RUN_DIR}/questions.json"
     fi

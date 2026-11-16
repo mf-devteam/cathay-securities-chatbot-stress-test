@@ -20,9 +20,9 @@ fi
 [ -t 0 ] || { echo "k6menu 需要在終端機中執行" >&2; exit 1; }
 
 if [ -t 1 ] && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
-    G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; B=$'\e[1m'; N=$'\e[0m'
+    G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; B=$'\e[1m'; D=$'\e[2m'; N=$'\e[0m'
 else
-    G=''; R=''; Y=''; B=''; N=''
+    G=''; R=''; Y=''; B=''; D=''; N=''
 fi
 ok()   { echo "  ${G}✓ $*${N}"; }
 bad()  { echo "  ${R}✗ $*${N}"; }
@@ -708,7 +708,8 @@ do_settings() {
 # 改的是客戶自己的 /etc/k6-stress/questions.json（第一次修改時從程式附的問句複製）；k6ctl start 會用這份同步到 runner
 QUESTIONS_FILE="$(dirname "$CONF_FILE")/questions.json"
 DEFAULT_QUESTIONS="${APP_DIR}/runner/k6/data/questions.json"
-CASES=("B1|開場問候" "B2-2|FAQ intent" "C1|查看 ETF 清單" "B2|FAQ 問答" "B3|多輪對話" "B4|知識庫以外問題" "B5|Model Armor 攔截")
+# B1 開場問候不開放修改（改了會影響訪客流程）：只顯示，k6ctl start 也一律用程式附的 B1
+CASES=("B2-2|FAQ intent" "C1|查看 ETF 清單" "B2|FAQ 問答" "B3|多輪對話" "B4|知識庫以外問題" "B5|Model Armor 攔截")
 
 qpy() { # qpy <動作> <參數…>：讀寫問句 JSON（格式檢查、每個情境至少一句）
     local py="${APP_DIR}/venv/bin/python3"
@@ -759,7 +760,6 @@ case_used_in() { # 這個情境用在哪支腳本
 
 case_hint() {
     case "$1" in
-        B1) echo "訪客進入聊天時自動送出的招呼。" ;;
         B2-2) echo "會觸發 FAQ intent（業務查詢）的問句。" ;;
         C1) echo "會帶出 ETF 相關業務查詢的問句。" ;;
         B2) echo "一般 FAQ 問題（由 AI 生成回覆）。" ;;
@@ -794,6 +794,7 @@ do_questions() {
         fi
         line
         printf '       %s  %s  %s\n' "$(pad '情境' 26)" "$(pad '問句數' 6)" "用在"
+        printf '       %s  %s  %s\n' "$(pad "B1 開場問候" 26)" "$(pad "$(qpy count "$DEFAULT_QUESTIONS" B1)" 6)" "每位訪客開頭（${D}固定，不開放修改${N}）"
         for i in "${!CASES[@]}"; do
             id="${CASES[$i]%%|*}"; name="${CASES[$i]#*|}"
             printf '   %2d) %s  %s  %s\n' $((i + 1)) "$(pad "${id} ${name}" 26)" "$(pad "$(qpy count "$src" "$id")" 6)" "$(case_used_in "$id")"
@@ -812,7 +813,7 @@ do_questions() {
                 mv "$QUESTIONS_FILE" "${QUESTIONS_FILE}.bak"
                 settings_log "問句恢復預設（舊的備份在 ${QUESTIONS_FILE}.bak）"
                 ok "已恢復預設問句。"; pause ;;
-            [1-7]) do_question_case "${CASES[$((choice - 1))]}" ;;
+            [1-6]) do_question_case "${CASES[$((choice - 1))]}" ;;
         esac
     done
 }
