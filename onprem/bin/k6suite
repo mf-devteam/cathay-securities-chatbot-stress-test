@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # v3 分開測試（客戶 2026-11-13 確認）的串接，在 control 背景執行：
 #   腳本甲 業務查詢 → 休息 V3_GAP_MIN 分鐘 → 腳本乙 FAQ 問答 → 合併報表（一份 HTML，甲、乙分區）
+#   也可以只跑其中一支（--only A／B，客戶 2026-11-22 要求）：不休息，報表上另一支顯示「未執行」
 # 對客戶一律稱「腳本甲／乙」（客戶 2026-11-16 要求）；程式內部代號仍為 A／B（RUN_A、runs/<SUITE_ID>-A、v3a）
 # 通常由 k6menu 操作；指令：
-#   k6suite start <smoke|x1|x3> [--abort|--no-abort]   背景開始一組測試，立即返回（關閉視窗、斷線都不影響）
+#   k6suite start <smoke|x1|x3> [--only A|B] [--abort|--no-abort]
+#                                                      背景開始一組測試，立即返回（關閉視窗、斷線都不影響）
 #   k6suite progress [SUITE_ID]                        目前做到哪（k6menu 的進度畫面）
 #   k6suite stop [SUITE_ID]                            整組停止（甲、乙都不再跑），仍會用停止前的數據產生報表
 #   k6suite report [SUITE_ID]                          重新產生合併報表
@@ -38,7 +40,16 @@ load_config() {
 }
 
 part_name() { case "$1" in A) echo "腳本甲 業務查詢" ;; B) echo "腳本乙 FAQ 問答" ;; esac; }
-kind_name() { case "$1" in smoke) echo "試跑 甲→乙" ;; x1) echo "正式測試 1 倍" ;; x3) echo "正式測試 3 倍" ;; *) echo "$1" ;; esac; }
+kind_name() { # kind_name <KIND> [ONLY]
+    local only=""
+    case "${2:-}" in A) only="（只跑腳本甲）" ;; B) only="（只跑腳本乙）" ;; esac
+    case "$1" in
+        smoke) [ -n "$only" ] && echo "試跑${only}" || echo "試跑 甲→乙" ;;
+        x1) echo "正式測試 1 倍${only}" ;;
+        x3) echo "正式測試 3 倍${only}" ;;
+        *) echo "$1${only}" ;;
+    esac
+}
 
 # ---------- 測試計畫 ----------
 plan_for() { # plan_for <kind> <A|B>
@@ -103,6 +114,7 @@ resolve() { # resolve [SUITE_ID]：設定 SUITE_ID、SDIR
 }
 
 load_suite() { # 讀入 suite.env（固定）與 state.env（進度）
+    ONLY=""  # 舊版的 suite.env 沒有 ONLY（＝甲、乙都跑）
     # shellcheck disable=SC1090,SC1091
     . "${SDIR}/suite.env"
     PHASE="" FINAL="" A_START="" A_END="" A_REASON="" B_START="" B_END="" B_REASON="" GAP_START="" REPORT_START="" REPORT="" DONE_AT="" MESSAGE=""
@@ -145,9 +157,9 @@ cmd_running() {
 stop_requested() { [ -f "${SDIR}/stop-requested" ]; }
 
 # ---------- 開始 ----------
-next_suite_id() { # 今天的第幾組：20261113-v3x3-01（runs 底下 A、B 分別為 -A、-B）
+next_suite_id() { # 今天的第幾組：20261113-v3x3-01；只跑一支時 20261113-v3x3a-01（runs 底下 A、B 分別為 -A、-B）
     local prefix n=1
-    prefix="$(date +%Y%m%d)-v3$1"
+    prefix="$(date +%Y%m%d)-v3$1$(tr 'AB' 'ab' <<< "${2:-}")"
     while [ -e "${SUITES}/$(printf '%s-%02d' "$prefix" "$n")" ] || [ -e "${DATA_DIR}/runs/$(printf '%s-%02d' "$prefix" "$n")-A" ]; do
         n=$((n + 1))
     done
@@ -155,17 +167,25 @@ next_suite_id() { # 今天的第幾組：20261113-v3x3-01（runs 底下 A、B �
 }
 
 cmd_start() {
-    local kind="" abort="" arg running_run
-    for arg in "$@"; do
+    local kind="" abort="" only="" arg running_run gap usage="用法：k6suite start <smoke|x1|x3> [--only A|B] [--abort|--no-abort]"
+    while [ $# -gt 0 ]; do
+        arg="$1"; shift
         case "$arg" in
             smoke|x1|x3) kind="$arg" ;;
             --abort) abort=true ;;
             --no-abort) abort=false ;;
-            *) die "用法：k6suite start <smoke|x1|x3> [--abort|--no-abort]" ;;
+            --only) only="${1:-}"; shift || true ;;
+            --only=*) only="${arg#--only=}" ;;
+            *) die "$usage" ;;
         esac
     done
-    [ -n "$kind" ] || die "用法：k6suite start <smoke|x1|x3> [--abort|--no-abort]"
+    [ -n "$kind" ] || die "$usage"
+    case "$only" in ''|A|B) ;; a|甲) only=A ;; b|乙) only=B ;; *) die "--only 只能是 A（腳本甲）或 B（腳本乙）" ;; esac
     load_config
+    # 休息時間：試跑用 V3_SMOKE_GAP_MIN（低流量不需要等系統回穩）；只跑一支時不休息
+    if [ -n "$only" ]; then gap=0
+    elif [ "$kind" = smoke ]; then gap="${V3_SMOKE_GAP_MIN:-2}"
+    else gap="${V3_GAP_MIN:-15}"; fi
     abort="${abort:-${V3_ABORT_DEFAULT:-false}}"
     mkdir -p "$SUITES"
     if running_run="$(cmd_running)"; then die "${running_run} 還在執行中，同時只能有一組測試"; fi
@@ -176,13 +196,13 @@ cmd_start() {
         [ $? -ne 1 ] || die "${running_run} 還在執行中，同時只能有一輪壓測"
     fi
 
-    SUITE_ID="$(next_suite_id "$kind")"
+    SUITE_ID="$(next_suite_id "$kind" "$only")"
     SDIR="$(suite_dir "$SUITE_ID")"
     mkdir -p "${SDIR}/reports"
     {
         echo "# k6suite start $(date -Iseconds) by ${SUDO_USER:-$(id -un)}"
         printf '%s=%q\n' SUITE_ID "$SUITE_ID" KIND "$kind" CREATED "$(date +%s)" \
-            PLAN_A "$(plan_for "$kind" A)" PLAN_B "$(plan_for "$kind" B)" GAP_MIN "${V3_GAP_MIN:-2}" ABORT "$abort" \
+            PLAN_A "$(plan_for "$kind" A)" PLAN_B "$(plan_for "$kind" B)" GAP_MIN "$gap" ABORT "$abort" ONLY "$only" \
             RUN_A "${SUITE_ID}-A" RUN_B "${SUITE_ID}-B" \
             WEIGHTS_A "${V3_A_WEIGHTS:?}" WEIGHTS_B "${V3_B_WEIGHTS:?}" A_MAX_MS "${V3_A_MAX_MS:?}" B_MAX_MS "${V3_B_MAX_MS:?}" \
             LATENCY_PCT "${V3_LATENCY_PCT:?}" FAIL_RATE "${V3_FAIL_RATE:?}" \
@@ -190,6 +210,8 @@ cmd_start() {
             TARGET "${BASE_URL:-}" RUNNER_COUNT "$(tr ';' '\n' <<< "${RUNNERS:-}" | sed '/^$/d' | wc -l | tr -d ' ')"
     } > "${SDIR}/suite.env"
     set_state PHASE starting
+    # 只跑一支時，另一支一開始就標成「未執行」（進度畫面、報表都會顯示）
+    case "$only" in A) set_state B_REASON skipped ;; B) set_state A_REASON skipped ;; esac
     setsid nohup "$0" _run "$SUITE_ID" > "${SDIR}/orchestrator.log" 2>&1 < /dev/null &
     echo $! > "${SDIR}/orchestrator.pid"
     echo "$SUITE_ID"
@@ -249,14 +271,20 @@ cmd_run() { # 背景執行，由 cmd_start 啟動
     load_config
     load_suite
     trap 'set_state FINAL error MESSAGE "串接程式被中斷" PHASE done DONE_AT "$(date +%s)"; exit 1' TERM INT
-    log "開始 ${SUITE_ID}（$(kind_name "$KIND")）A=${PLAN_A} B=${PLAN_B} 休息 ${GAP_MIN} 分鐘 自動停止=${ABORT}"
+    log "開始 ${SUITE_ID}（$(kind_name "$KIND" "$ONLY")）A=${PLAN_A} B=${PLAN_B} 休息 ${GAP_MIN} 分鐘 自動停止=${ABORT}"
 
-    if ! run_part A; then
-        set_state PHASE done FINAL error B_REASON skipped DONE_AT "$(date +%s)" MESSAGE "腳本甲無法啟動，整組未執行（請看 orchestrator.log）"
+    if [ "$ONLY" = B ]; then
+        run_part B || set_state MESSAGE "腳本乙無法啟動（請看 orchestrator.log）"
+    elif ! run_part A; then
+        if [ "$ONLY" = A ]; then
+            set_state PHASE done FINAL error DONE_AT "$(date +%s)" MESSAGE "腳本甲無法啟動（請看 orchestrator.log）"
+        else
+            set_state PHASE done FINAL error B_REASON skipped DONE_AT "$(date +%s)" MESSAGE "腳本甲無法啟動，整組未執行（請看 orchestrator.log）"
+        fi
         return 1
-    fi
-
-    if stop_requested; then
+    elif [ "$ONLY" = A ]; then
+        :
+    elif stop_requested; then
         set_state B_REASON skipped
     else
         log "休息 ${GAP_MIN} 分鐘"
@@ -303,7 +331,7 @@ cmd_stop() {
 cmd_report() {
     resolve "${1:-}"
     load_suite
-    "$K6CTL" collect "$RUN_A" > /dev/null 2>&1 || true
+    [ -f "${DATA_DIR}/runs/${RUN_A}/runners.txt" ] && { "$K6CTL" collect "$RUN_A" > /dev/null 2>&1 || true; }
     [ -f "${DATA_DIR}/runs/${RUN_B}/runners.txt" ] && { "$K6CTL" collect "$RUN_B" > /dev/null 2>&1 || true; }
     make_report && echo "  報表：${SDIR}/reports/report-${SUITE_ID}.html"
 }
@@ -340,7 +368,7 @@ reason_text() {
         completed) echo "${G}✓ 已完成${N}" ;;
         aborted) echo "${Y}■ 自動停止（失敗率超過 $(awk -v r="${V3_ABORT_FAIL_RATE:-0.05}" 'BEGIN { printf "%g", r * 100 }')%）${N}" ;;
         stopped) echo "${Y}■ 已手動停止${N}" ;;
-        skipped) echo "${D}– 未執行${N}" ;;
+        skipped) echo "${D}– 未執行${ONLY:+（這次只跑腳本$([ "$ONLY" = A ] && echo 甲 || echo 乙)）}${N}" ;;
         start_failed) echo "${R}✗ 無法啟動${N}" ;;
         *) echo "${R}✗ 異常結束${N}" ;;
     esac
@@ -370,7 +398,7 @@ cmd_progress() {
     start_at="${A_START:-$CREATED}"
     orchestrator_alive || alive=false
 
-    echo "  測試編號：${B}${SUITE_ID}${N}　$(kind_name "$KIND")　$(hhmm "$CREATED") 開始　自動停止：$([ "$ABORT" = true ] && echo 開啟 || echo 關閉)"
+    echo "  測試編號：${B}${SUITE_ID}${N}　$(kind_name "$KIND" "$ONLY")　$(hhmm "$CREATED") 開始　自動停止：$([ "$ABORT" = true ] && echo 開啟 || echo 關閉)"
     echo
     # 依序：腳本 A、休息、腳本 B、報表；ETA 由目前進度往後推
     local cursor="$now" a_line b_line
@@ -401,7 +429,7 @@ cmd_progress() {
             item 0 "$label" "${D}等待中（約 $(hhmm "$cursor") 開始）${N}"
             cursor=$((cursor + est))
         fi
-        if [ "$p" = A ]; then
+        if [ "$p" = A ] && [ -z "$ONLY" ]; then
             if [ "$PHASE" = gap ]; then
                 el=$((now - GAP_START))
                 item 1 "休息 ${GAP_MIN} 分鐘" "${Y}${B}休息中${N}　剩 $(mmss $(( gap_s - el > 0 ? gap_s - el : 0 )))（讓腳本甲的影響消退，腳本乙的數據才乾淨）"
@@ -454,10 +482,10 @@ cmd_brief() {
     load_suite
     case "$PHASE" in
         starting) echo "啟動中" ;;
-        A) echo "目前：腳本甲 業務查詢執行中（1/2）" ;;
+        A) [ -n "$ONLY" ] && echo "目前：腳本甲 業務查詢執行中（只跑這一支）" || echo "目前：腳本甲 業務查詢執行中（1/2）" ;;
         gap) echo "目前：腳本甲已結束，休息中，接著跑腳本乙" ;;
-        B) echo "目前：腳本乙 FAQ 問答執行中（2/2）" ;;
-        report) echo "目前：甲、乙都已結束，正在產生合併報表" ;;
+        B) [ -n "$ONLY" ] && echo "目前：腳本乙 FAQ 問答執行中（只跑這一支）" || echo "目前：腳本乙 FAQ 問答執行中（2/2）" ;;
+        report) [ -n "$ONLY" ] && echo "目前：腳本已結束，正在產生報表" || echo "目前：甲、乙都已結束，正在產生合併報表" ;;
         done) echo "已結束" ;;
     esac
 }
@@ -467,7 +495,7 @@ cmd_list() {
     for id in $(ls -1t "$SUITES" 2>/dev/null); do
         SDIR="$(suite_dir "$id")"
         load_suite 2>/dev/null || continue
-        printf '  %-24s %-14s %s  %s\n' "$id" "$(kind_name "$KIND")" "$(date -d "@$CREATED" '+%Y-%m-%d %H:%M')" "${FINAL:-執行中}"
+        printf '  %-24s %-14s %s  %s\n' "$id" "$(kind_name "$KIND" "$ONLY")" "$(date -d "@$CREATED" '+%Y-%m-%d %H:%M')" "${FINAL:-執行中}"
     done
 }
 

@@ -20,10 +20,13 @@
    - 門檻 p95：甲 6 秒、乙 20 秒；失敗率暫定 0.5%（`V3_FAIL_RATE`）。
    - 程式：`script-v3-a-business.js`、`script-v3-b-faq.js`、`lib/v3.js`、`report-job/v3_report.py`、`onprem/bin/k6suite`。
    - **對客戶一律稱「腳本甲／乙」**，程式內部代號仍是 A／B。
+   - 選單 13 可以單獨跑甲或乙（`k6suite start x1 --only A`），不休息，報表上另一支顯示「未執行」。選單 14 開關每支腳本的情境（寫進 stress.env 的 `V3_A_WEIGHTS`／`V3_B_WEIGHTS`）。
+   - 甲、乙之間休息 `V3_GAP_MIN`＝15 分鐘（2026-11-22 起）；試跑另用 `V3_SMOKE_GAP_MIN`＝2 分鐘。
 2. **對話回應時間測試（選單 9 → 子選單）：** `script-qa.js`、`qa_report.py`、`QA_*` 參數。
 3. **原始逐階加壓（選單 9 → 子選單）：** `script.js`，S0 5 → S1 30 → S2 118 → S3 354 → S4 30 TPS。
 
-- 問句共用 `runner/k6/data/questions.json`，**不要拆檔**。客戶可以在選單 11 修改 `/etc/k6-stress/questions.json`，`k6ctl start` 時會同步到 runner。
+- 問句共用 `runner/k6/data/questions.json`，**不要拆檔**。客戶可以在選單 11 修改 `/etc/k6-stress/questions.json`，`k6ctl start` 時會同步到 runner。B1 固定用程式附的問句。客戶曾把 B5 改成一般問句（11/19），我們決定不鎖、口頭提醒改回「我要放火燒你全家」。
+- 重新安裝不會覆蓋 `/etc/k6-stress/` 的 stress.env 與 questions.json。客戶的 stress.env 目前把 1 倍改成 39 TPS、3 倍改成 118 TPS（`V3_PLAN_X*`），乙的情境拿掉了 B5（11/20 報表）。
 - TPS＝聊天 API（`/api/chat/ask`）每秒請求數，包含開場問候。
 
 ## 慣例

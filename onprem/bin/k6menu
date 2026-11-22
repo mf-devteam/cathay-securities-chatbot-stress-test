@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 壓測操作選單（control）：給證券方執行人員用，輸入數字即可操作，不需要記 k6ctl 指令。
 # 主選單是 v3 分開測試（腳本甲 業務查詢 → 腳本乙 FAQ 問答 → 合併報表，底層為 k6suite）；
+# 13 可以單獨跑甲或乙（1 倍／3 倍），14 選擇每支腳本要測的情境（客戶 2026-11-22 要求）。
 # 對客戶一律稱「腳本甲／乙」（客戶 2026-11-16 要求）；程式內部代號仍為 A／B（RUN_A、-A、v3a）
 # 舊版測試（逐階加壓正式壓測、對話回應時間測試）收在「9) 其他測試」。
 # 底層呼叫 k6suite／k6ctl；進階操作仍可直接用指令（k6suite help、k6ctl help）。
@@ -137,6 +138,8 @@ menu() {
     echo "  10) 調整設定          （回應時間門檻、失敗率門檻、休息時間）"
     echo "  11) 管理測試問句      （查看或修改每個情境的問句）"
     echo "  12) 使用說明          （每個按鈕在做什麼、目前的設定）"
+    echo "  13) 單獨跑一支腳本    （只跑甲或只跑乙，1 倍／3 倍）"
+    echo "  14) 選擇測試情境      （每支腳本要測哪些情境）"
     echo "   0) 離開"
     line
 }
@@ -424,10 +427,18 @@ part_minutes() { # 一支腳本：爬升＋持續＋收尾 1 分鐘
     echo $(( $(stage_minutes full "$1") ))
 }
 
-suite_minutes() { # 整組：A＋休息＋B＋報表約 2 分鐘
+gap_for() { # gap_for <smoke|x1|x3>：甲、乙之間休息幾分鐘（同 k6suite）
+    [ "$1" = smoke ] && echo "${V3_SMOKE_GAP_MIN:-2}" || echo "${V3_GAP_MIN:-15}"
+}
+
+suite_minutes() { # suite_minutes <smoke|x1|x3> [A|B]：整組＝A＋休息＋B＋報表約 2 分鐘；只跑一支＝那一支＋報表
     local a b
+    case "${2:-}" in
+        A) echo $(( $(part_minutes "$(plan_for "$1" A)") + 2 )); return ;;
+        B) echo $(( $(part_minutes "$(plan_for "$1" B)") + 2 )); return ;;
+    esac
     a=$(part_minutes "$(plan_for "$1" A)"); b=$(part_minutes "$(plan_for "$1" B)")
-    awk -v a="$a" -v b="$b" -v g="${V3_GAP_MIN:-2}" 'BEGIN { printf "%d", a + g + b + 2 }'
+    awk -v a="$a" -v b="$b" -v g="$(gap_for "$1")" 'BEGIN { printf "%d", a + g + b + 2 }'
 }
 
 case_list() { # case_list 'B2:28;B5:2' → B2 FAQ 問答 93%、B5 Model Armor 攔截 7%
@@ -461,8 +472,8 @@ plan_words() { # x3:354tps:10:1 → 爬升 1 分鐘到 354 TPS，固定負載 10
     echo "$out"
 }
 
-do_v3() { # do_v3 smoke|x1|x3
-    local kind="$1" run rc=0 suite abort="${V3_ABORT_DEFAULT:-false}" ans title start_flag
+do_v3() { # do_v3 smoke|x1|x3 [A|B]：第二個參數＝只跑這一支
+    local kind="$1" only="${2:-}" run rc=0 suite abort="${V3_ABORT_DEFAULT:-false}" ans title start_flag only_args=() n=1
     if suite="$(suite_running)"; then
         echo; bad "${suite} 還在執行中，同時只能有一組測試。可以選 5 查看進度，或選 6 停止。"
         pause; return
@@ -478,18 +489,31 @@ do_v3() { # do_v3 smoke|x1|x3
         x1) title="正式測試 1 倍" ;;
         x3) title="正式測試 3 倍" ;;
     esac
+    case "$only" in
+        A) title="只跑腳本甲 業務查詢 ${kind#x} 倍"; only_args=(--only A) ;;
+        B) title="只跑腳本乙 FAQ 問答 ${kind#x} 倍"; only_args=(--only B) ;;
+    esac
+    local steps=("①" "②" "③" "④")
     echo
     echo "  ${B}${title}${N}：以下步驟會自動依序完成，中途不需要操作。"
     echo
-    echo "   ① 腳本甲 業務查詢（$(case_list "$V3_A_WEIGHTS")）"
-    echo "      $(plan_words "$(plan_for "$kind" A)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_A_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
-    echo "   ② 休息 ${V3_GAP_MIN} 分鐘"
-    echo "   ③ 腳本乙 FAQ 問答（$(case_list "$V3_B_WEIGHTS")）"
-    echo "      $(plan_words "$(plan_for "$kind" B)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_B_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
-    echo "   ④ 產生合併報表（甲、乙分開呈現）"
+    if [ "$only" != B ]; then
+        echo "   ${steps[$((n++ - 1))]} 腳本甲 業務查詢（$(case_list "$V3_A_WEIGHTS")）"
+        echo "      $(plan_words "$(plan_for "$kind" A)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_A_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
+    fi
+    [ -z "$only" ] && echo "   ${steps[$((n++ - 1))]} 休息 $(gap_for "$kind") 分鐘"
+    if [ "$only" != A ]; then
+        echo "   ${steps[$((n++ - 1))]} 腳本乙 FAQ 問答（$(case_list "$V3_B_WEIGHTS")）"
+        echo "      $(plan_words "$(plan_for "$kind" B)")；門檻 p${V3_LATENCY_PCT} ≤ $(awk -v m="$V3_B_MAX_MS" 'BEGIN { printf "%g", m / 1000 }') 秒"
+    fi
+    case "$only" in
+        A) echo "   ${steps[$((n++ - 1))]} 產生報表（腳本乙顯示「未執行」）" ;;
+        B) echo "   ${steps[$((n++ - 1))]} 產生報表（腳本甲顯示「未執行」）" ;;
+        *) echo "   ${steps[$((n++ - 1))]} 產生合併報表（甲、乙分開呈現）" ;;
+    esac
     echo
     echo "  受測端　：${BASE_URL}"
-    echo "  預計時間：約 $(suite_minutes "$kind") 分鐘，約 $(date -d "+$(suite_minutes "$kind") min" +%H:%M) 完成"
+    echo "  預計時間：約 $(suite_minutes "$kind" "$only") 分鐘，約 $(date -d "+$(suite_minutes "$kind" "$only") min" +%H:%M) 完成"
     if [ "$kind" != smoke ]; then
         echo
         echo "  遇到嚴重異常時要自動停止嗎？"
@@ -504,8 +528,12 @@ do_v3() { # do_v3 smoke|x1|x3
             read -r -p "  請選擇 [1]：" ans
             [ "$ans" = 2 ] && abort=true
         fi
-        if [ "$abort" = true ]; then
+        if [ "$abort" = true ] && [ -n "$only" ]; then
+            echo "  → 自動停止：開啟。"
+        elif [ "$abort" = true ]; then
             echo "  → 自動停止：開啟。腳本甲被自動停止時，休息後照樣跑腳本乙。"
+        elif [ -n "$only" ]; then
+            echo "  → 自動停止：關閉，一律跑完。"
         else
             echo "  → 自動停止：關閉，甲、乙都會跑完。"
         fi
@@ -516,7 +544,7 @@ do_v3() { # do_v3 smoke|x1|x3
     [ "$abort" = true ] && start_flag=--abort || start_flag=--no-abort
     echo
     echo "  啟動中…"
-    if ! suite="$("$K6SUITE" start "$kind" "$start_flag" 2>&1)"; then
+    if ! suite="$("$K6SUITE" start "$kind" "${only_args[@]}" "$start_flag" 2>&1)"; then
         echo "$suite"
         echo; bad "啟動失敗。請選 8 打包問題資料，把檔案寄給${CONTACT}。"
         pause; return
@@ -525,6 +553,34 @@ do_v3() { # do_v3 smoke|x1|x3
     sleep 2
     do_watch "$suite"
 }
+
+# ---------- 13. 單獨跑一支腳本 ----------
+do_single() {
+    local choice
+    while true; do
+        header
+        echo "  ${B}單獨跑一支腳本${N}：只跑甲或只跑乙，不休息；報表上沒跑的那一支顯示「未執行」。"
+        echo "  查看進度、停止、報表一樣用主選單的 5、6、7。"
+        echo
+        echo "   1) 只跑腳本甲 業務查詢 1 倍   （$(plan_peak "$V3_PLAN_X1_A") TPS，約 $(suite_minutes x1 A) 分鐘）"
+        echo "   2) 只跑腳本乙 FAQ 問答 1 倍   （$(plan_peak "$V3_PLAN_X1_B") TPS，約 $(suite_minutes x1 B) 分鐘）"
+        echo "   3) 只跑腳本甲 業務查詢 3 倍   （$(plan_peak "$V3_PLAN_X3_A") TPS，約 $(suite_minutes x3 A) 分鐘）"
+        echo "   4) 只跑腳本乙 FAQ 問答 3 倍   （$(plan_peak "$V3_PLAN_X3_B") TPS，約 $(suite_minutes x3 B) 分鐘）"
+        echo "   0) 回主選單"
+        line
+        read -r -p "  請輸入數字：" choice || return
+        case "$choice" in
+            1) do_v3 x1 A; return ;;
+            2) do_v3 x1 B; return ;;
+            3) do_v3 x3 A; return ;;
+            4) do_v3 x3 B; return ;;
+            0|q|Q|'') return ;;
+            *) ;;
+        esac
+    done
+}
+
+plan_peak() { qa_peak_tps "$1"; }
 
 # 進度畫面：每 10 秒自動更新；按 Enter 或 Ctrl+C 回到選單（測試照樣在背景執行）
 do_watch() {
@@ -617,7 +673,7 @@ SETTINGS=(
     "V3_B_MAX_MS|腳本乙 FAQ 問答 回應時間門檻（p95）|秒|ms|1|120"
     "V3_FAIL_RATE|對話失敗率門檻|%|pct|0|100"
     "V3_ABORT_FAIL_RATE|自動停止的失敗率（開始前選擇開啟時才用）|%|pct|0.1|100"
-    "V3_GAP_MIN|甲、乙之間休息時間|分鐘|raw|0|30"
+    "V3_GAP_MIN|甲、乙之間休息時間（正式測試）|分鐘|raw|0|60"
 )
 
 to_display() { # to_display <換算> <存的值>
@@ -859,6 +915,101 @@ do_question_case() { # do_question_case "<代號>|<名稱>"
     done
 }
 
+# ---------- 14. 選擇測試情境 ----------
+# 改的是 stress.env 的 V3_A_WEIGHTS／V3_B_WEIGHTS（覆蓋 defaults.env）；占比沿用「業務情境組合」的權重，只開關情境
+# 代號|名稱|腳本（A 只能放業務查詢、B 只能放 FAQ，混放 k6 會報錯，所以這裡固定分好）
+PICK_CASES=("B2-2|FAQ intent|A" "C1|查看 ETF 清單|A" "B2|FAQ 問答|B" "B3|多輪對話|B" "B4|知識庫以外問題|B" "B5|Model Armor 攔截|B")
+
+weight_in() { # weight_in <權重字串> <代號>：有就印出權重
+    local entry
+    IFS=';' read -r -a entries <<< "$1"
+    for entry in "${entries[@]}"; do [ "${entry%%:*}" = "$2" ] && { echo "${entry#*:}"; return 0; }; done
+    return 1
+}
+
+case_weight() { # 開啟情境時用的權重：預設的 V3_*_WEIGHTS → SCENARIO_WEIGHTS → 1
+    weight_in "$(default_of V3_A_WEIGHTS);$(default_of V3_B_WEIGHTS)" "$1" || weight_in "$(default_of SCENARIO_WEIGHTS)" "$1" || echo 1
+}
+
+case_share() { # case_share <權重字串> <代號> → 58%
+    awk -v w="$1" -v id="$2" 'BEGIN { n = split(w, a, ";"); for (i = 1; i <= n; i++) { split(a[i], kv, ":"); t += kv[2]; if (kv[1] == id) x = kv[2] }
+        if (t > 0) printf "%.0f%%", x / t * 100 }'
+}
+
+toggle_weights() { # toggle_weights <目前權重字串> <A|B> <代號>：開關一個情境，依 PICK_CASES 的順序重組
+    local cur="$1" part="$2" target="$3" item id p w out=""
+    for item in "${PICK_CASES[@]}"; do
+        IFS='|' read -r id _ p <<< "$item"
+        [ "$p" = "$part" ] || continue
+        w="$(weight_in "$cur" "$id")" || w=""
+        if [ "$id" = "$target" ]; then
+            if [ -n "$w" ]; then w=""; else w="$(case_weight "$id")"; fi
+        fi
+        [ -n "$w" ] && out+="${out:+;}${id}:${w}"
+    done
+    echo "$out"
+}
+
+do_cases() {
+    local choice i id name p key cur new part_name mark share
+    while true; do
+        load_config
+        clear 2>/dev/null || true
+        line
+        echo "  ${B}選擇測試情境${N}　輸入編號＝加入／拿掉這個情境。改完從${B}下一組測試${N}開始生效。"
+        echo "  占比依「業務情境組合」的權重自動換算。"
+        line
+        for i in "${!PICK_CASES[@]}"; do
+            IFS='|' read -r id name p <<< "${PICK_CASES[$i]}"
+            if [ "$i" -eq 0 ] || [ "$p" != "$(cut -d'|' -f3 <<< "${PICK_CASES[$((i - 1))]}")" ]; then
+                [ "$p" = A ] && echo "  ${B}腳本甲 業務查詢${N}" || { echo; echo "  ${B}腳本乙 FAQ 問答${N}"; }
+            fi
+            [ "$p" = A ] && cur="$V3_A_WEIGHTS" || cur="$V3_B_WEIGHTS"
+            if weight_in "$cur" "$id" > /dev/null; then
+                mark="${G}[✓] 測試${N}"
+                share="$(case_share "$cur" "$id")"
+            else
+                mark="${D}[ ] 不測${N}"; share=""
+            fi
+            printf '   %2d) %s  %s  %s\n' $((i + 1)) "$mark" "$(pad "${id} ${name}" 24)" "$share"
+        done
+        echo
+        echo "    9) 恢復預設情境（甲：$(case_list "$(default_of V3_A_WEIGHTS)" | sed 's/ [0-9]*%//g')；乙：$(case_list "$(default_of V3_B_WEIGHTS)" | sed 's/ [0-9]*%//g')）"
+        echo "    0) 回主選單"
+        line
+        read -r -p "  請輸入編號：" choice || return
+        case "$choice" in
+            0|q|Q|'') return ;;
+            9)
+                confirm "甲、乙都恢復預設情境。" || { pause; continue; }
+                sed -i '/^V3_A_WEIGHTS=/d; /^V3_B_WEIGHTS=/d' "$CONF_FILE"
+                settings_log "測試情境恢復預設"
+                ok "已恢復預設情境。"; pause ;;
+            [1-9])
+                [ "$choice" -le "${#PICK_CASES[@]}" ] || continue
+                IFS='|' read -r id name p <<< "${PICK_CASES[$((choice - 1))]}"
+                if [ "$p" = A ]; then key=V3_A_WEIGHTS; part_name="腳本甲"; else key=V3_B_WEIGHTS; part_name="腳本乙"; fi
+                cur="${!key}"
+                new="$(toggle_weights "$cur" "$p" "$id")"
+                echo
+                if [ -z "$new" ]; then
+                    bad "${part_name}至少要留一個情境，不能全部拿掉。"; pause; continue
+                fi
+                if weight_in "$cur" "$id" > /dev/null; then
+                    echo "  ${part_name}拿掉 ${B}${id} ${name}${N}"
+                else
+                    echo "  ${part_name}加入 ${B}${id} ${name}${N}"
+                    [ "$id" = B5 ] && warn "B5 的問句必須會被 Model Armor 攔截（選單 11 可以查看），沒攔截的每一則都算失敗。"
+                fi
+                echo "  改完：$(case_list "$new")"
+                confirm "修改${part_name}的測試情境。" || { pause; continue; }
+                conf_set "$key" "'${new}'"
+                settings_log "${key} ${cur} → ${new}"
+                ok "已修改，下一組測試開始生效。"; pause ;;
+        esac
+    done
+}
+
 # ---------- 12. 使用說明 ----------
 do_help() {
     load_config
@@ -881,12 +1032,15 @@ do_help() {
    9) 其他測試     舊版測試（逐階加壓正式壓測、對話回應時間測試）。
   10) 調整設定     回應時間門檻、失敗率門檻、休息時間。
   11) 管理測試問句 查看或修改每個情境的問句。
+  13) 單獨跑一支腳本
+                   只跑腳本甲或只跑腳本乙（1 倍／3 倍），不休息；報表上另一支顯示「未執行」。
+  14) 選擇測試情境 每支腳本要測哪些情境（例如乙要不要測 B5）。
 EOF
     echo
     read -r -p "  按 Enter 看下一頁（目前的設定）…" _ || return
     clear 2>/dev/null || true
     line
-    echo "  ${B}使用說明（2/2）：目前的設定${N}（在 10、11 可以修改）"
+    echo "  ${B}使用說明（2/2）：目前的設定${N}（在 10、11、14 可以修改）"
     line
     echo "  腳本甲 業務查詢：$(case_list "$V3_A_WEIGHTS")"
     echo "      負載：1 倍 $(plan_words "$V3_PLAN_X1_A")；3 倍 $(plan_words "$V3_PLAN_X3_A")"
@@ -894,7 +1048,7 @@ EOF
     echo "  腳本乙 FAQ 問答：$(case_list "$V3_B_WEIGHTS")"
     echo "      負載：1 倍 $(plan_words "$V3_PLAN_X1_B")；3 倍 $(plan_words "$V3_PLAN_X3_B")"
     echo "      門檻：回應時間 p${V3_LATENCY_PCT} ≤ $(to_display ms "$V3_B_MAX_MS") 秒、對話失敗率 ≤ $(to_display pct "$V3_FAIL_RATE")%"
-    echo "  甲、乙之間休息：${V3_GAP_MIN} 分鐘"
+    echo "  甲、乙之間休息：正式測試 ${V3_GAP_MIN} 分鐘、試跑 ${V3_SMOKE_GAP_MIN:-2} 分鐘（單獨跑一支時不休息）"
     echo "  自動停止（開始前選擇）：開啟時，開始 $(dur_text "$V3_ABORT_DELAY") 後失敗率超過 $(to_display pct "$V3_ABORT_FAIL_RATE")% 就停止該支腳本"
     echo "  問句：$([ -f "$QUESTIONS_FILE" ] && echo "已修改（${QUESTIONS_FILE}）" || echo "程式附的預設問句")"
     echo
@@ -931,6 +1085,8 @@ while true; do
         10) do_settings ;;
         11) do_questions ;;
         12|h|H|help|'?') do_help ;;
+        13) do_single ;;
+        14) do_cases ;;
         0|q|Q) echo; exit 0 ;;
         *) ;;
     esac

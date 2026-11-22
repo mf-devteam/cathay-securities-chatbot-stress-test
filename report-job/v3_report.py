@@ -670,7 +670,7 @@ def rules_table(pct, limits, fail_limit, abort_rate):
         ("判定", "通過", f"回應時間 {key} ≤ 門檻（{lim}）<b>且</b> 對話失敗率 ≤ {g(fail_limit * 100)}%。"),
         ("判定", "未通過", f"上面兩項任一項超過門檻；或依設定自動停止（失敗率超過 {g(abort_rate * 100)}%）。"),
         ("判定", "未完成", "執行人員手動停止，或壓測機異常結束。只列出停止前的數據供參考，不判定通過與否。"),
-        ("判定", "未執行", "這支腳本沒有開始，例如前一支執行時已手動停止整組測試。"),
+        ("判定", "未執行", "這支腳本沒有開始：這次選擇只跑另一支腳本，或前一支執行時已手動停止整組測試。"),
         ("數字", "判定範圍", "每支腳本爬升到目標 TPS 之後的固定負載期間（不含爬升與收尾）。爬升中就停止時，改用整輪數據。"),
         ("數字", f"回應時間 {key}", f"判定範圍內所有對話的回應時間由快到慢排序，取第 {g(pct)}% 那一筆（兩筆之間線性內插，與 k6 相同）。"
                                "甲、乙各自計算，不合併。"),
@@ -701,6 +701,9 @@ def render_page(env, state, parts, verdicts, *, title, generated_ms):
     weights = {"A": env.get("WEIGHTS_A", ""), "B": env.get("WEIGHTS_B", "")}
     reasons = {"A": state.get("A_REASON", ""), "B": state.get("B_REASON", "")}
     kind = KIND_NAMES.get(env.get("KIND", ""), env.get("KIND", ""))
+    only = env.get("ONLY", "")  # 只跑一支（k6suite start --only A／B）；舊版 suite.env 沒有這個值
+    if only in PARTS:
+        kind += f"（只跑腳本{PARTS[only]['label']}）"
     t_first = min((p["t0_ms"] for p in parts.values() if not p.get("empty")), default=None)
     t_last = max((p["t1_ms"] for p in parts.values() if not p.get("empty")), default=None)
     same_target = targets["A"] if targets["A"] == targets["B"] else None
@@ -722,6 +725,13 @@ def render_page(env, state, parts, verdicts, *, title, generated_ms):
         f"<td>{e(t.get('k6_exit') if t.get('k6_exit') is not None else '—')}</td><td>{num(t['requests'])}</td></tr>"
         for pid in ("A", "B") for t in (parts[pid].get("tasks") or []))
 
+    if only in PARTS:
+        other = "B" if only == "A" else "A"
+        how_first = (f"<li>這次只跑腳本{PARTS[only]['label']}（{e(PARTS[only]['name'])}），"
+                     f"腳本{PARTS[other]['label']}（{e(PARTS[other]['name'])}）未執行。</li>")
+    else:
+        how_first = (f"<li>先跑腳本甲（業務查詢），休息 {e(env.get('GAP_MIN', ''))} 分鐘讓系統回穩，再跑腳本乙（FAQ 問答）。"
+                     "兩支腳本的數據分開計算，不混在一起。</li>")
     body = f"""
 <header class="top">
 <h1>{e(title)}</h1>
@@ -745,7 +755,7 @@ def render_page(env, state, parts, verdicts, *, title, generated_ms):
 <div class="timeline">
 {timeline_html(env, parts, state)}
 <ul class="how">
-<li>先跑腳本甲（業務查詢），休息 {e(env.get('GAP_MIN', ''))} 分鐘讓系統回穩，再跑腳本乙（FAQ 問答）。兩支腳本的數據分開計算，不混在一起。</li>
+{how_first}
 <li>每支腳本：{e(plan_text(plans['A'])[0]) if plans['A'] == plans['B'] else '負載見附錄'}。<b>判定只看固定負載期間</b>，不含爬升。</li>
 <li>以「對話」為單位：使用者提問的一問一答＝一則對話。回應時間＝送出問題到收完回覆（含 AI 生成時間）。</li>
 <li>失敗＝回應不是預期結果：系統錯誤（5xx）、逾時、HTTP 429，或回應內容不符預期。</li>

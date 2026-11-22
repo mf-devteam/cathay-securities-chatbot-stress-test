@@ -130,6 +130,19 @@ class V3ReportTest(unittest.TestCase):
         self.assertIn("自動停止", page)
         self.assertIn("未執行", page)
 
+    def test_only_one_part_shows_other_as_not_run(self):
+        with open(os.path.join(self.suite, "suite.env"), "a") as f:
+            f.write("ONLY=B\nGAP_MIN=0\n")
+        b = HEADER + req(T, 15000, "faq", "B2") + qa(T, False, "faq", "B2")
+        self.write_run("S-B", b)
+        self.write_state("A_REASON=skipped\nB_REASON=completed\nFINAL=completed\n")
+        r = self.build()
+        self.assertEqual(r["verdicts"], {"A": "nodata", "B": "pass"})
+        page = r["page"]
+        self.assertIn("只跑腳本乙", page)
+        self.assertIn("未執行", page)
+        self.assertNotIn("休息 0 分鐘", page)
+
     def test_stopped_during_ramp_uses_whole_run(self):
         a = HEADER + req(T, 1000, "business", "C1", phase="ramp") + qa(T, False, "business", "C1", phase="ramp")
         self.write_run("S-A", a)
