@@ -8,7 +8,7 @@ terraform {
     }
   }
 
-  # state bucket 用 -backend-config 指定（見 README.md），與雲端版共用同一個 bucket、不同 prefix
+  # state bucket 用 -backend-config 指定（見 onprem/README.md「lab」），與雲端版共用同一個 bucket、不同 prefix
   backend "gcs" {
     prefix = "k6-stress/onprem-lab"
   }

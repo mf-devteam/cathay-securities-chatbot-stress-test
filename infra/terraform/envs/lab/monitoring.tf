@@ -1,4 +1,4 @@
-# 壓測通知與告警（設計見 infra/terraform/README.md「監控與告警」）
+# 壓測通知與告警（設計見 docs/cloud-run.md「監控與告警」）
 # lab 專案與其他團隊共用：資源名稱一律加 k6 前綴，不修改既有的通知管道與告警
 
 locals {

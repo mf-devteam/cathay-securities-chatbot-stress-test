@@ -6,7 +6,7 @@
 #   2. k6 原生輸出 CSV（gzip）到容器本機
 #   3. 背景每 UPLOAD_INTERVAL_S 秒把「目前的」CSV 上傳一次（覆蓋同名檔），讓報表 Job 隨時能讀到最新資料
 #   4. k6 結束（或收到 SIGTERM）後做最後一次上傳，並上傳該 task 的 dashboard HTML、summary.json、console log
-#   5. 通知事件（stdout → Cloud Logging → log-based alert 寄信，見 infra/terraform/README.md「監控與告警」）：
+#   5. 通知事件（stdout → Cloud Logging → log-based alert 寄信，見 docs/cloud-run.md「監控與告警」）：
 #      task-000 寫出 STRESS_TEST_EVENT=START／END；k6 腳本寫出的 STRESS_TEST_EVENT=STAGE 轉送到 stdout
 #
 # 輸出位置（OUTPUT_URI/RUN_ID 底下）：

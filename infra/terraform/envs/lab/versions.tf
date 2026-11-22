@@ -8,7 +8,7 @@ terraform {
     }
   }
 
-  # state bucket 用 -backend-config 指定（見 infra/terraform/README.md「初始化」），不和其他團隊共用
+  # state bucket 用 -backend-config 指定（見 docs/cloud-run.md「初始化與套用」），不和其他團隊共用
   backend "gcs" {
     prefix = "k6-stress/lab"
   }

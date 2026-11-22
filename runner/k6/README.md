@@ -124,7 +124,7 @@ k6 run -e BASE_URL=http://127.0.0.1:8090 -e STAGE_PLAN='x3:20tps:3:1' -e TIME_SC
 STRESS_TEST_EVENT=STAGE run_id=… stage=x1 pct=1 conv_per_s=118.00 api_per_s=1239 hold_min=30 time_scale=1
 ```
 
-entrypoint.sh 把這行轉送到 stdout → Cloud Logging → 「進入新階段」通知（[infra/terraform/README.md](../../infra/terraform/README.md)「監控與告警」）。
+entrypoint.sh 把這行轉送到 stdout → Cloud Logging → 「進入新階段」通知（[docs/cloud-run.md](../../docs/cloud-run.md#監控與告警)「監控與告警」）。
 
 ## 本機執行
 

@@ -19,7 +19,7 @@ node runner/k6/mock/mock-server.js &          # mock 受測端 127.0.0.1:8090
 
 ## 2. lab（改到 onprem/、k6ctl、k6menu、k6suite、安裝流程時）
 
-說明見 [infra/terraform/envs/onprem-lab/README.md](../../../infra/terraform/envs/onprem-lab/README.md)。
+說明見 [onprem/README.md「lab」](../../../onprem/README.md#9-labgce-vm-模擬證券方-dmz)。
 
 - 先問使用者 lab VM 是否已經開著。`terraform apply` 請使用者自己執行。
 - 登入：`gcloud compute ssh k6-control-report-01 --zone asia-east1-b --project cfh-de-chatbot-lab --tunnel-through-iap`

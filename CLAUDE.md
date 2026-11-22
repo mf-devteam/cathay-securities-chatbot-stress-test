@@ -1,8 +1,8 @@
 # CLAUDE.md
 
 國泰證券「新阿發」AI 客服的 k6 壓力測試工具。客戶＝證券方；我方＝MF（Microfusion）。
-一般說明見 [README.md](README.md)、[onprem/README.md](onprem/README.md)；這份檔案記錄**文件裡看不出來的背景、決策與地雷**。
-文件很多，接手時的閱讀順序見 [README.md](README.md) 開頭「剛接手：照這個順序看」；`docs/` 大多是 10 月規劃期的資料，可以先跳過。
+這份檔案記錄**文件裡看不出來的背景、決策與地雷**。一般說明：地端版 [onprem/README.md](onprem/README.md)、雲端版 [docs/cloud-run.md](docs/cloud-run.md)；`docs/` 其餘是 10 月規劃期的資料，可以先跳過。
+文件整理原則：**一個版本一份說明**，不要在子目錄另開 README（`runner/k6/` 的腳本與 mock 說明除外）。
 
 ## 目前進度與待辦（2026-11-23）
 

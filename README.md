@@ -1,111 +1,50 @@
 # 新阿發 壓力測試（k6）
 
-國泰證券「新阿發」AI 客服的壓力測試工具與文件。依據「新阿發 壓力測試規劃 v1.4」開發。
-**目前主力是地端版**（證券方 DMZ 的 3 台 runner＋1 台 control，客戶用 k6menu 操作）；雲端版（Cloud Run Jobs）是早期版本，現在沒有在跑。
+國泰證券「新阿發」AI 客服的壓力測試工具。客戶＝證券方；我方＝MF（Microfusion）。
+
+有兩個版本，**目前主力是地端版**：
+
+| | 地端版（目前主力） | 雲端版（早期版本，目前沒在用） |
+|---|---|---|
+| 說明文件 | **[onprem/README.md](onprem/README.md)** | [docs/cloud-run.md](docs/cloud-run.md) |
+| 在哪裡跑 | 證券方 DMZ：3 台 runner＋1 台 control，RHEL 9.6、離線安裝 | GCP Cloud Run Jobs，多個 task 平行，數據放 GCS |
+| 怎麼操作 | 客戶在 control 上用 `k6menu` 選單操作 | `gcloud run jobs execute` |
+| 範圍 | 只測未登入訪客，打到 3 倍（354 TPS） | 1 倍上限、「業務情境組合」黃色列 8 項 |
+| 專屬程式 | `onprem/`、`infra/terraform/envs/onprem-lab/`（我們的 lab） | `runner/Dockerfile`、`runner/entrypoint.sh`、`infra/terraform/envs/lab/`、`scripts/` |
+
+兩版共用 k6 腳本 [runner/k6/](runner/k6/README.md) 和報表程式 `report-job/`，改這兩個目錄時兩邊都會受影響。
 
 ## 剛接手：照這個順序看
 
 | 順序 | 文件 | 看什麼 |
 |---|---|---|
 | 1 | [CLAUDE.md](CLAUDE.md) | **最重要。**背景、決策、踩過的地雷、客戶環境現況、目前進度與待辦 |
-| 2 | [onprem/README.md](onprem/README.md) | 地端版怎麼打包、安裝、操作（k6ctl／k6menu／k6suite） |
-| 3 | [infra/terraform/envs/onprem-lab/README.md](infra/terraform/envs/onprem-lab/README.md) | 我們自己的 lab（GCE 模擬地端）：怎麼登入、怎麼更新程式、怎麼驗證 |
-| 4 | [runner/k6/README.md](runner/k6/README.md) | 要改 k6 腳本時才看：腳本流程、參數一覽 |
+| 2 | [onprem/README.md](onprem/README.md) | 地端版：三種測試、打包、安裝、k6menu 操作、我們的 lab |
+| 3 | [runner/k6/README.md](runner/k6/README.md) | 要改 k6 腳本時才看：腳本流程、參數一覽 |
 
 常做的事已經寫成 Claude Code 的 skill，直接說「打包」「在 lab 驗證」「客戶跑完幫我看」就會照步驟做：
 [package-delivery](.claude/skills/package-delivery/SKILL.md)、[lab-verify](.claude/skills/lab-verify/SKILL.md)、[analyze-customer-run](.claude/skills/analyze-customer-run/SKILL.md)。
 
-**其他文件都可以先跳過：**`runner/README.md`、`report-job/README.md`、`infra/terraform/README.md` 和下面的「雲端壓測操作」是雲端版的說明；[docs/](docs/README.md) 是 10 月規劃期的調查與簡報素材，只在需要查來龍去脈時看。
-
----
-
-以下是整個 repo 的說明（含雲端版）。
+其他都可以先跳過：[docs/cloud-run.md](docs/cloud-run.md) 是雲端版；[docs/](docs/README.md) 其餘是 10 月規劃期的調查與簡報素材，只在需要查來龍去脈時看。
 
 ## 目錄
 
 ```
 .
-├── runner/             Cloud Run Job「k6-runner」（壓測機）
-│   ├── Dockerfile
-│   ├── entrypoint.sh   execution segment 分流、CSV 定時上傳 GCS
-│   └── k6/             k6 正式腳本（script.js、lib/、data/）
-│       └── mock/       本機 mock server（受測端替身）
-├── report-job/         Cloud Run Job「k6-report」（合併報告）
-├── onprem/             地端版：VM 安裝腳本、連線預檢、control 操作指令 k6ctl
-├── infra/terraform/    GCP 資源（Job、IAM、GCS、網路）的 IaC；envs/onprem-lab 為地端模擬 lab
-├── scripts/            本機模擬整套流程（local-sim.sh）、通知 dry run（notify-dry-run.sh）
-└── docs/               文件
+├── CLAUDE.md           背景、決策、地雷、現況（接手先看）
+├── onprem/             地端版：安裝、k6menu／k6suite／k6ctl、打包（說明在 onprem/README.md）
+├── runner/k6/          k6 腳本（兩版共用）；mock/ 是本機 mock server
+├── report-job/         報表程式（兩版共用）；tests/ 是單元測試
+├── runner/             雲端版的壓測機映像檔（Dockerfile、entrypoint.sh）
+├── infra/terraform/    envs/onprem-lab＝地端模擬 lab；envs/lab＝雲端版的通知與告警
+├── scripts/            雲端版的本機模擬、通知 dry run
+└── docs/               cloud-run.md（雲端版說明）、規劃期的調查與量測
 ```
 
-| 路徑 | 內容 |
-|---|---|
-| [runner/](runner/) | 壓測機（Cloud Run Jobs）：容器、啟動腳本與 [k6 腳本](runner/k6/)。業務情境依「業務情境組合」黃色列；[runner/k6/mock/](runner/k6/mock/) 是本機 mock server |
-| [report-job/](report-job/) | 壓測報表 Job（Python，Cloud Run Jobs，手動執行）：合併所有 task 的原始數據，產生單一 HTML 報告 |
-| [infra/terraform/](infra/terraform/) | Terraform：Cloud Run Jobs、service account／IAM、GCS bucket、Artifact Registry、VPC／Cloud NAT、通知與告警 |
-| [onprem/](onprem/README.md) | 地端版（依地端執行環境規劃 v1.0）：install.sh（runner／control）、連線預檢、`k6ctl` 啟停與收集、離線安裝包；lab 用 [infra/terraform/envs/onprem-lab](infra/terraform/envs/onprem-lab/README.md) 在 GCE 模擬 |
-| [scripts/](scripts/) | 本機模擬整套流程（mock → 多個 runner task → report-job）；通知 dry run |
-| [docs/](docs/) | 文件：環境調查、API 盤點、架構、量測紀錄、dashboard 教學、交接 |
-
-SIT 連線試跑腳本（`k6-poc/`）已移除，需要時見 git 歷史（commit 560a85b）。
-
-## 快速開始（本機，不連任何環境）
-
-需要 k6（v2.3.0）、Node.js、Python 3.10 以上。
-
-```bash
-# 1. 只看 k6 dashboard：mock server + 逐階加壓到 1 倍（時間 ÷15，約 9 分鐘）
-node runner/k6/mock/mock-server.js &
-mkdir -p runner/k6/results
-K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_OPEN=true \
-K6_WEB_DASHBOARD_EXPORT=runner/k6/results/report.html \
-  k6 run -e BASE_URL=http://127.0.0.1:8090 -e TIME_SCALE=15 -e RESULTS_DIR=runner/k6/results runner/k6/script.js
-
-# 在匯出的 dashboard 上加中文教學說明
-python3 report-job/annotate.py runner/k6/results/report.html
-
-# 2. 模擬正式機制：3 個 task → 定時上傳（本機資料夾模擬 GCS）→ 合併報告（約 4 分鐘）
-scripts/local-sim.sh
-```
-
-## 雲端壓測操作（早期版本，目前沒在用）
-
-前提：已用 [infra/terraform/](infra/terraform/README.md) 部署；受測端已暫停 reCAPTCHA、Cloud Armor 已加入 NAT IP 白名單。
-
-```bash
-REGION=<region>; BUCKET=<bucket>; RUN_ID=20261020-baseline
-
-# 1. 開始壓測
-gcloud run jobs execute k6-runner --region $REGION \
-  --update-env-vars RUN_ID=$RUN_ID
-
-# 2. 看進度
-gcloud run jobs executions list --job k6-runner --region $REGION
-
-# 3. 產生報告（壓測中、結束後都可以）
-gcloud run jobs execute k6-report --region $REGION \
-  --update-env-vars SOURCE_URI=gs://$BUCKET/runs/$RUN_ID
-
-# 4. 下載報告
-gcloud storage cp gs://$BUCKET/runs/$RUN_ID/reports/latest.html .
-```
-
-**中途停止（全部 task 一起停）：**
-
-```bash
-gcloud run jobs executions list --job k6-runner --region $REGION     # 找 execution 名稱
-gcloud run jobs executions cancel <execution 名稱> --region $REGION
-```
-
-- 停止前已上傳的數據會保留，可以照步驟 3 產生「截至停止時」的報告。
-- 最後一個上傳間隔（預設 5 分鐘）內的數據可能遺失。
-
-## 文件
-
-- [docs/README.md](docs/README.md)：文件索引
-- [docs/handover-claude-desktop.md](docs/handover-claude-desktop.md)：給 Claude Desktop 製作客戶簡報用的交接
+單元測試：`cd report-job && python3 -m unittest discover -s tests`
 
 ## 安全注意事項
 
-- **k6 腳本預設只能打本機：** [runner/k6/script.js](runner/k6/script.js) 的 `BASE_URL` 不是 `127.0.0.1`／`localhost` 時，必須另外設定 `ALLOW_REMOTE_TARGET=true`（由 Job 定義設定），避免本機誤打真實環境。
-- **對任何真實環境執行前，都要先取得負責人同意，**並遵守 [docs/tasks/2026-10-07-k6-poc-handover.md](docs/tasks/2026-10-07-k6-poc-handover.md) 的限制。
-- **不要把帳號、token、金鑰寫進檔案或 commit；**一律用環境變數。
+- **k6 腳本預設只能打本機：** `BASE_URL` 不是 `127.0.0.1`／`localhost` 時，必須另外設定 `ALLOW_REMOTE_TARGET=true`，避免本機誤打真實環境。
+- **對任何真實環境執行前，都要先取得負責人同意。**SIT／UAT 是客戶環境，我們不能操作，也不要從 lab 打 SIT／UAT。
+- **不要把帳號、token、金鑰寫進檔案或 commit；**一律用環境變數。根目錄的客戶 xlsx／pdf 和 `logs/`（客戶 log）不能進 git。
