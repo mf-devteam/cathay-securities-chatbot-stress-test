@@ -1,5 +1,8 @@
 # 文件索引
 
+> 這裡大多是 **2026-10 規劃期**的調查、量測與簡報素材（當時以雲端版為主），接手時不用先看。
+> 現況與決策請看根目錄的 [CLAUDE.md](../CLAUDE.md)，地端版操作看 [onprem/README.md](../onprem/README.md)。
+
 | 文件 | 內容 | 讀者 |
 |---|---|---|
 | [handover-claude-desktop.md](handover-claude-desktop.md) | 交接：做法、量測結果、待確認事項，用來製作客戶簡報 | Claude Desktop／PM |

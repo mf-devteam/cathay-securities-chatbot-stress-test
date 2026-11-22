@@ -1,10 +1,25 @@
 # 新阿發 壓力測試（k6）
 
-國泰證券「新阿發」AI 客服的壓力測試工具與文件。依據「新阿發 壓力測試規劃 v1.4」開發：
+國泰證券「新阿發」AI 客服的壓力測試工具與文件。依據「新阿發 壓力測試規劃 v1.4」開發。
+**目前主力是地端版**（證券方 DMZ 的 3 台 runner＋1 台 control，客戶用 k6menu 操作）；雲端版（Cloud Run Jobs）是早期版本，現在沒有在跑。
 
-- 工具：k6
-- 執行：Cloud Run Jobs 多個 task 平行；地端版為證券方 DMZ 的 3 台 runner VM（[onprem/](onprem/README.md)）
-- 報表：原始數據存 GCS，合併後產生報告
+## 剛接手：照這個順序看
+
+| 順序 | 文件 | 看什麼 |
+|---|---|---|
+| 1 | [CLAUDE.md](CLAUDE.md) | **最重要。**背景、決策、踩過的地雷、客戶環境現況、目前進度與待辦 |
+| 2 | [onprem/README.md](onprem/README.md) | 地端版怎麼打包、安裝、操作（k6ctl／k6menu／k6suite） |
+| 3 | [infra/terraform/envs/onprem-lab/README.md](infra/terraform/envs/onprem-lab/README.md) | 我們自己的 lab（GCE 模擬地端）：怎麼登入、怎麼更新程式、怎麼驗證 |
+| 4 | [runner/k6/README.md](runner/k6/README.md) | 要改 k6 腳本時才看：腳本流程、參數一覽 |
+
+常做的事已經寫成 Claude Code 的 skill，直接說「打包」「在 lab 驗證」「客戶跑完幫我看」就會照步驟做：
+[package-delivery](.claude/skills/package-delivery/SKILL.md)、[lab-verify](.claude/skills/lab-verify/SKILL.md)、[analyze-customer-run](.claude/skills/analyze-customer-run/SKILL.md)。
+
+**其他文件都可以先跳過：**`runner/README.md`、`report-job/README.md`、`infra/terraform/README.md` 和下面的「雲端壓測操作」是雲端版的說明；[docs/](docs/README.md) 是 10 月規劃期的調查與簡報素材，只在需要查來龍去脈時看。
+
+---
+
+以下是整個 repo 的說明（含雲端版）。
 
 ## 目錄
 
@@ -52,7 +67,7 @@ python3 report-job/annotate.py runner/k6/results/report.html
 scripts/local-sim.sh
 ```
 
-## 雲端壓測操作
+## 雲端壓測操作（早期版本，目前沒在用）
 
 前提：已用 [infra/terraform/](infra/terraform/README.md) 部署；受測端已暫停 reCAPTCHA、Cloud Armor 已加入 NAT IP 白名單。
 
