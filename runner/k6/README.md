@@ -6,12 +6,15 @@
 k6/
 ├── script.js          入口：k6 options（逐階加壓、門檻）、一位訪客的完整對話、摘要
 ├── script-qa.js       對話回應時間測試：以一問一答為單位（見下方「對話回應時間測試」）
+├── script-v3-a-business.js  v3 分開測試的腳本甲（業務查詢），邏輯在 lib/v3.js（見下方「v3 分開測試」）
+├── script-v3-b-faq.js       v3 分開測試的腳本乙（FAQ 問答）
 ├── lib/
 │   ├── config.js      讀取全部環境變數與預設值（下方參數一覽）
 │   ├── stages.js      STAGE_PLAN → 逐階加壓、stage／phase tag、階段切換事件
 │   ├── scenarios.js   業務情境與權重
 │   ├── chat.js        POST /api/chat/ask、結果分類、自訂指標
-│   └── frontend.js    模擬前端的進站、頁面載入、泡泡請求（SIMULATE_FRONTEND）
+│   ├── frontend.js    模擬前端的進站、頁面載入、泡泡請求（SIMULATE_FRONTEND）
+│   └── v3.js          v3 分開測試：腳本甲、乙共用的 options、訪客流程、門檻、摘要
 ├── data/questions.json  各情境的問句（暫定，正式問句待提供）
 └── mock/              本機 mock server（受測端替身）
 ```
@@ -114,6 +117,45 @@ k6/
 node runner/k6/mock/mock-server.js &
 mkdir -p runner/k6/results
 k6 run -e BASE_URL=http://127.0.0.1:8090 -e STAGE_PLAN='x3:20tps:3:1' -e TIME_SCALE=3 -e RESULTS_DIR=runner/k6/results runner/k6/script-qa.js
+```
+
+## v3 分開測試（script-v3-a-business.js、script-v3-b-faq.js）
+
+客戶 2026-11-13 確認、**目前客戶在用**的測試。業務查詢與 FAQ 分成兩支腳本，各自判定；對客戶一律稱「腳本甲／乙」，程式內部代號是 A／B。與正式腳本、對話回應時間測試並存（那兩支不變）。
+
+兩支腳本只有入口不同，邏輯都在 [lib/v3.js](lib/v3.js)，做法與 `script-qa.js` 相同：一次 iteration ＝ 一則對話（一次 `/api/chat/ask`），負載直接控制聊天 API 每秒請求數（TPS，含開場問候）；每個 VU 一位訪客，開場問候＋8～11 則後換下一位；對話失敗（5xx、逾時、429、回應內容不符預期）照樣繼續問。指標同樣是 `qa_failed`／`qa_opening_failed`。
+
+| 項目 | 腳本甲 業務查詢（A） | 腳本乙 FAQ 問答（B） |
+|---|---|---|
+| 入口 | `script-v3-a-business.js` | `script-v3-b-faq.js` |
+| 情境 | 只能放 `flow=business`（B2-2、C1），混到 FAQ 會直接報錯 | 只能放 `flow=faq`（B2、B3、B4、B5） |
+| 回應時間門檻 | `V3_A_MAX_MS`（6 秒） | `V3_B_MAX_MS`（20 秒） |
+| 負載 | 1 倍 118、3 倍 354 TPS（甲、乙各自打滿，不依占比拆），1 分鐘爬升＋10 分鐘 | 同左 |
+
+**誰來執行：** 地端由 control 的 [k6suite](../../onprem/bin/k6suite) 串接：甲 → 休息 `V3_GAP_MIN` 分鐘 → 乙 → [report-job/v3_report.py](../../report-job/v3_report.py) 產生一份合併報表（甲、乙分開統計）。也可以只跑其中一支（`k6suite start x1 --only A`），報表上另一支顯示「未執行」。k6suite 對每支腳本呼叫 `k6ctl start <RUN_ID> TEST_TYPE=v3a|v3b STAGE_PLAN=… SCENARIO_WEIGHTS=…`，runner 上的 k6-agent 依 `TEST_TYPE` 選入口檔案。
+
+**腳本讀的參數**（k6suite 從 defaults.env／stress.env 的同名參數帶入）：
+
+| 參數 | 預設 | 說明 |
+|---|---|---|
+| STAGE_PLAN | — | k6suite 帶入 `V3_PLAN_X1_A`／`V3_PLAN_X1_B`／`V3_PLAN_X3_A`／`V3_PLAN_X3_B`／`V3_PLAN_SMOKE`；用 TPS 寫，例如 `x3:354tps:10:1` |
+| SCENARIO_WEIGHTS | — | k6suite 帶入 `V3_A_WEIGHTS`（`B2-2:36;C1:12`）／`V3_B_WEIGHTS`（`B2:28;B3:15;B4:5;B5:2`）；現場在 k6menu 14 開關 |
+| V3_A_MAX_MS／V3_B_MAX_MS | 6000／20000 | 回應時間門檻（毫秒） |
+| V3_LATENCY_PCT | 95 | 以第幾百分位判定回應時間 |
+| V3_FAIL_RATE | 0.005 | 對話失敗率門檻 |
+| V3_ABORT | false | 開始前在 k6menu 選擇（預設值 `V3_ABORT_DEFAULT`）；`true`＝開始 `V3_ABORT_DELAY` 後，累計失敗率 > `V3_ABORT_FAIL_RATE` 就停止這支腳本 |
+| V3_ABORT_FAIL_RATE／V3_ABORT_DELAY | 0.05／3m | 自動停止的失敗率與延後判定時間 |
+| V3_PRE_VUS／V3_MAX_VUS | 最高 TPS × 20／× 30 | VU 數（全部 task 合計）；報表出現 dropped_iterations 時調高 |
+
+**只有 k6suite／k6menu 用的參數**（不傳給 k6）：`V3_GAP_MIN`（甲、乙之間休息，15 分鐘）、`V3_SMOKE_GAP_MIN`（試跑的休息，2 分鐘）、`V3_REPORT_TITLE`（報表標題）。每個參數的說明都在 [onprem/config/defaults.env](../../onprem/config/defaults.env)。
+
+本機（以腳本乙為例）：
+
+```bash
+node runner/k6/mock/mock-server.js &
+mkdir -p runner/k6/results
+k6 run -e BASE_URL=http://127.0.0.1:8090 -e STAGE_PLAN='x1:10tps:2:1' -e SCENARIO_WEIGHTS='B2:28;B3:15;B4:5;B5:2' \
+  -e RESULTS_DIR=runner/k6/results runner/k6/script-v3-b-faq.js
 ```
 
 ## 階段切換事件
