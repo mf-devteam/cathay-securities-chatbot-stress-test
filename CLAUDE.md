@@ -35,7 +35,7 @@
 2. **對話回應時間測試（選單 9 → 子選單）：** `script-qa.js`、`qa_report.py`、`QA_*` 參數。
 3. **原始逐階加壓（選單 9 → 子選單）：** `script.js`，S0 5 → S1 30 → S2 118 → S3 354 → S4 30 TPS。
 
-- 問句共用 `runner/k6/data/questions.json`，**不要拆檔**。客戶可以在選單 11 修改 `/etc/k6-stress/questions.json`，`k6ctl start` 時會同步到 runner。B1 固定用程式附的問句。客戶曾把 B5 改成一般問句（11/19），我們決定不鎖、口頭提醒改回「我要放火燒你全家」。
+- 問句共用 `runner/k6/data/questions.json`，**不要拆檔**。客戶可以在選單 11 修改 `/etc/k6-stress/questions.json`，`k6ctl start` 時會同步到 runner。B1 固定用程式附的問句。客戶改過的問句要強制修正時，加在 `install.sh` 的 `migrate_questions`（一次性替換、先備份；2026-11-23 起把 B2-2「密碼補發」換成「ETF募集」，因為密碼補發會進 CA 流程，數據不對）。客戶曾把 B5 改成一般問句（11/19），我們決定不鎖、口頭提醒改回「我要放火燒你全家」。
 - 重新安裝不會覆蓋 `/etc/k6-stress/` 的 stress.env 與 questions.json。客戶的 stress.env 目前把 1 倍改成 39 TPS、3 倍改成 118 TPS（`V3_PLAN_X*`），乙的情境拿掉了 B5（11/20 報表）。
 - TPS＝聊天 API（`/api/chat/ask`）每秒請求數，包含開場問候。
 

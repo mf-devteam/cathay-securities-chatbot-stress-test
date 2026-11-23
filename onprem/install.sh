@@ -288,6 +288,50 @@ setup_control() {
     setup_control_ssh
     setup_selinux_ssh
     setup_report_venv
+    migrate_questions
+}
+
+# 客戶在 k6menu 11 改過問句時，測試用的是 /etc/k6-stress/questions.json，重新安裝不會覆蓋。
+# 這裡只做「必須修正」的一次性替換，客戶自己改過的其他問句不動；改之前先備份，並寫進 k6menu 的修改紀錄。
+#   2026-11-23：B2-2「密碼補發」會進 CA 流程，不是 FAQ intent，數據不對 → 換成「ETF募集」
+migrate_questions() {
+    local q="${CONF_DIR}/questions.json" out
+    [ -f "$q" ] || return 0
+    if ! out="$(python3 - "$q" <<'PY'
+import json, os, shutil, sys, time
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    q = json.load(f)
+FIXES = [("B2-2", "密碼補發", "ETF募集")]
+done = []
+for case, old, new in FIXES:
+    items = q.get(case)
+    if isinstance(items, list) and old in items:
+        # 換完如果重複（客戶已經有新的那句），只留一句
+        q[case] = list(dict.fromkeys(new if x == old else x for x in items))
+        done.append(f"{case}「{old}」→「{new}」")
+if done:
+    shutil.copy2(path, f"{path}.bak-{time.strftime('%Y%m%d%H%M%S')}")
+    keys = [k for k in q if k != "_note"]
+    lines = ["{"] + ([f'  "_note": {json.dumps(q["_note"], ensure_ascii=False)},'] if "_note" in q else [])
+    lines += [f'  {json.dumps(k, ensure_ascii=False)}: {json.dumps(q[k], ensure_ascii=False)}' + ("," if i < len(keys) - 1 else "")
+              for i, k in enumerate(keys)]
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines + ["}"]) + "\n")
+    shutil.copymode(path, tmp)
+    os.replace(tmp, path)
+    print("、".join(done))
+PY
+)"; then
+        log "警告：${q} 無法讀取（格式錯誤？），問句沒有自動修正"
+        return 0
+    fi
+    [ -n "$out" ] || return 0
+    chown "$K6_USER:$K6_USER" "$q" "${q}".bak-*
+    log "已修正客戶問句 ${q}：${out}（原檔備份為 ${q}.bak-*）"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') install.sh 問句修正：${out}" >> "${DATA_DIR}/settings-history.log"
+    chown "$K6_USER:$K6_USER" "${DATA_DIR}/settings-history.log"
 }
 
 # 報表用的獨立 Python 環境（Ubuntu 24.04 預設禁止 pip 直接裝到系統 Python；RHEL 9 為 Python 3.9）：pandas、plotly（規劃 p.10）
