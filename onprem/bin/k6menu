@@ -633,17 +633,76 @@ do_stop() {
     echo; echo "  目前沒有執行中的測試。"; pause
 }
 
+# 一組測試的一行說明：只跑甲 1 倍　11/23 11:05　甲 通過、乙 未執行
+suite_line() { # suite_line <SUITE_ID>
+    local d="${DATA_DIR}/suites/$1" kind only created final title v a b
+    kind="$(grep '^KIND=' "${d}/suite.env" 2>/dev/null | cut -d= -f2)"
+    only="$(grep '^ONLY=' "${d}/suite.env" 2>/dev/null | cut -d= -f2)"
+    created="$(grep '^CREATED=' "${d}/suite.env" 2>/dev/null | cut -d= -f2)"
+    final="$(grep '^FINAL=' "${d}/state.env" 2>/dev/null | cut -d= -f2)"
+    case "$kind" in smoke) title="試跑" ;; x1) title="1 倍" ;; x3) title="3 倍" ;; *) title="$kind" ;; esac
+    case "$only" in
+        A) title="只跑甲 ${title}" ;;
+        B) title="只跑乙 ${title}" ;;
+        *) [ "$kind" = smoke ] && title="試跑 甲→乙" || title="正式測試 ${title}（甲＋乙）" ;;
+    esac
+    verdict_word() {
+        case "$(grep "^$1_VERDICT=" "${d}/reports/verdict.env" 2>/dev/null | cut -d= -f2)" in
+            pass) echo "${G}通過${N}" ;; fail) echo "${R}未通過${N}" ;; incomplete) echo "${Y}未完成${N}" ;;
+            nodata) echo "${D}未執行${N}" ;; *) echo "—" ;;
+        esac
+    }
+    if [ -f "${d}/reports/verdict.env" ]; then
+        v="甲 $(verdict_word A)、乙 $(verdict_word B)"
+    elif [ -z "$final" ]; then
+        v="${Y}執行中${N}"
+    else
+        v="${D}沒有報表${N}"
+    fi
+    printf '%s  %s  %s' "$(pad "$title" 24)" "$(date -d "@${created:-0}" '+%m/%d %H:%M')" "$v"
+}
+
 do_report() {
-    local suite sdir rpt
+    local suite sdir rpt choice i list=()
     if [ "$(latest_kind)" != suite ] && ! suite_running > /dev/null; then do_report_run; return; fi
-    suite="$(suite_running)" || suite="$(latest_suite)"
+    local running=""
+    if running="$(suite_running)"; then
+        echo
+        warn "${running} 還在執行中，全部跑完後會自動產生報表。"
+        read -r -p "  y＝先產生「截至目前」的報表，l＝看之前測試的報表，Enter＝回選單：" ans
+        case "$ans" in
+            y|Y) suite="$running" ;;
+            l|L) running="" ;;
+            *) return ;;
+        esac
+    fi
+    if [ -z "$running" ]; then
+        # 列出最近幾組，讓執行人員挑（單獨跑甲、單獨跑乙是兩組，各自一份報表）
+        mapfile -t list < <(ls -1t "${DATA_DIR}/suites" 2>/dev/null | head -8)
+        [ "${#list[@]}" -gt 0 ] || { echo; echo "  還沒有任何測試紀錄。"; pause; return; }
+        echo
+        echo "  ${B}最近的測試${N}（新的在上面；只跑甲、只跑乙是分開的兩組，各有一份報表）"
+        echo
+        for i in "${!list[@]}"; do
+            printf '   %d) %s  %s\n' $((i + 1)) "$(pad "${list[$i]}" 20)" "$(suite_line "${list[$i]}")"
+        done
+        echo "   0) 回主選單"
+        echo
+        read -r -p "  要看哪一組？（直接按 Enter＝第 1 組）" choice || return
+        case "$choice" in
+            '') choice=1 ;;
+            0|q|Q) return ;;
+        esac
+        if ! [[ "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 1 ] || [ "$choice" -gt "${#list[@]}" ]; then
+            bad "沒有這個編號。"; pause; return
+        fi
+        suite="${list[$((choice - 1))]}"
+    fi
     sdir="${DATA_DIR}/suites/${suite}"
     rpt="${sdir}/reports/report-${suite}.html"
     echo
-    if suite_running > /dev/null; then
-        warn "${suite} 還在執行中，全部跑完後會自動產生報表。"
-        read -r -p "  要先產生「截至目前」的報表嗎？（y＝產生，Enter＝回選單）" ans
-        [ "$ans" = y ] || [ "$ans" = Y ] || { return; }
+    if [ "$suite" = "$running" ]; then
+        :
     elif [ -f "$rpt" ]; then
         ok "${suite} 的報表："
         echo "     ${B}${rpt}${N}"
@@ -1027,7 +1086,7 @@ do_help() {
                    在背景執行，關閉視窗或斷線都不會中斷；開始前可選擇是否自動停止。
    5) 查看進度     目前跑到哪支腳本、哪個階段、預計幾點完成；每 10 秒自動更新。
    6) 停止測試     整組停止（還沒跑的腳本不會開始），用停止前的數據產生報表。
-   7) 取得報表     顯示報表檔案位置；也可以重新產生。報表用瀏覽器開啟，不需要連網。
+   7) 取得報表     列出最近的測試，選一組顯示報表位置；也可以重新產生。報表用瀏覽器開啟，不需要連網。
    8) 打包問題資料 有問題時把產生的檔案寄給 ${CONTACT}。
    9) 其他測試     舊版測試（逐階加壓正式壓測、對話回應時間測試）。
   10) 調整設定     回應時間門檻、失敗率門檻、休息時間。
