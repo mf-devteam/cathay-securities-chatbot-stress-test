@@ -261,9 +261,18 @@ runner 不用逐台更新：`k6ctl start` 每次都會把 control 上的程式�
 | 角色 | 用途 |
 |---|---|
 | `IAP-secured Tunnel User`（`roles/iap.tunnelResourceAccessor`） | 經 IAP 連到 control（防火牆只開 IAP → control 22，連不到其他 VM） |
-| 可以修改 VM metadata 的角色，例如 `Editor` 或 `Compute Instance Admin (v1)` | `gcloud compute ssh` 要把你的公鑰寫進 control 的 metadata |
+| 可以修改 VM metadata 的角色，例如 `Compute Instance Admin (v1)`（`roles/compute.instanceAdmin.v1`） | `gcloud compute ssh` 要把你的公鑰寫進 control 的 metadata |
+| `Service Account User`（`roles/iam.serviceAccountUser`），授權在 control 的服務帳號 `k6-onprem-control@cfh-de-chatbot-lab.iam.gserviceaccount.com` 上 | control 以這個服務帳號執行，改它的 metadata 需要這個權限 |
 
-沒有 IAM 管理權限時請專案管理員加。也可以在 `terraform.tfvars` 設定 `iap_members = ["user:<帳號>"]`，只授權在 control 這台 VM 上，再 apply。權限加完約 1～7 分鐘生效。
+專案的 `Editor` 已包含以上全部。沒有 IAM 管理權限時請專案管理員加。`terraform.tfvars` 的 `iap_members = ["user:<帳號>"]` **只會給第一個（IAP）**，另外兩個仍要另外加。權限加完約 1～7 分鐘生效。
+
+```bash
+P=cfh-de-chatbot-lab; U=user:<同仁信箱>
+gcloud projects add-iam-policy-binding $P --member="$U" --role=roles/iap.tunnelResourceAccessor --condition=None
+gcloud projects add-iam-policy-binding $P --member="$U" --role=roles/compute.instanceAdmin.v1 --condition=None
+gcloud iam service-accounts add-iam-policy-binding k6-onprem-control@cfh-de-chatbot-lab.iam.gserviceaccount.com \
+  --project=$P --member="$U" --role=roles/iam.serviceAccountUser
+```
 
 **2. 登入**
 
